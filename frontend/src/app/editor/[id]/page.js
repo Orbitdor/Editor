@@ -7,6 +7,8 @@ import { getDoc, saveDoc, createDoc } from "@/lib/api";
 import { TopRuler, LeftRuler } from "@/components/Rulers";
 import MenuBar from "@/components/MenuBar";
 import Toolbar from "@/components/Toolbar";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Loader2 } from "lucide-react";
 
 const PAGE_W = 808;
 const PAGE_H = 1120;
@@ -523,131 +525,154 @@ export default function Editor() {
         />
       </div>
 
-      <div className="editor-canvas relative flex-1 overflow-auto bg-[#e8eaed] px-4 py-10">
-        <div
-          className="print-hide absolute left-0 w-[18px]"
-          style={{ top: 70, height: PAGE_H }}
-        >
-          <LeftRuler
-            height={PAGE_H}
-            indentTop={indentTop}
-            onIndentTop={setIndentTopAll}
-          />
-        </div>
-        <div
-          className="editor-zoom-wrap"
-          style={{
-            transform: `scale(${zoom / 100})`,
-            transformOrigin: "top center",
-          }}
-        >
-          <div className="mx-auto w-fit">
-            <div className="print-hide flex">
-              <div className="w-6 shrink-0" />
-              <TopRuler
-                width={PAGE_W}
-                indentLeft={indentLeft}
-                onIndentLeft={setIndentLeftAll}
-              />
-            </div>
-            <div className="ml-6">
-              <div className="print-area relative" style={{ width: PAGE_W }}>
-                {pages.map((p, idx) => (
-                  <div
-                    key={p.key}
-                    ref={(el) => {
-                      if (el) {
-                        elsRef.current[p.key] = el;
-                        if (!editorRef.current) editorRef.current = el;
-                      } else {
-                        delete elsRef.current[p.key];
-                      }
-                    }}
-                    contentEditable={!viewOnly}
-                    suppressContentEditableWarning
-                    spellCheck
-                    className="print-page editable-area text-base leading-8 text-zinc-900 outline-none"
-                    style={{
-                      width: PAGE_W,
-                      height: PAGE_H,
-                      padding: `${indentTop}px ${PAD_R}px ${PAD_B}px ${indentLeft}px`,
-                      background: "#fff",
-                      border: "1px solid #e4e4e7",
-                      boxShadow: "0 1px 4px rgba(0,0,0,0.12)",
-                      marginBottom: GAP,
-                      overflow: "hidden",
-                    }}
-                    dangerouslySetInnerHTML={{ __html: p.html }}
-                    onFocus={(e) => {
-                      editorRef.current = e.currentTarget;
-                    }}
-                    onInput={(e) => {
-                      if (e.nativeEvent && e.nativeEvent.isComposing) return;
-                      htmlRef.current = readCombined();
-                      dirtyRef.current = true;
-                      setRev((r) => r + 1);
-                      scheduleRepaginate();
-                    }}
-                    onKeyDown={(e) => handleKeyDown(e, idx)}
-                  />
-                ))}
-                {firstEmpty ? (
-                  <div
-                    aria-hidden
-                    className="print-hide pointer-events-none absolute text-base leading-8 text-zinc-400"
-                    style={{ top: indentTop, left: indentLeft }}
-                  >
-                    Start writing...
-                  </div>
-                ) : null}
+      {loaded ? (
+        <div className="editor-canvas relative flex-1 overflow-auto bg-[#e8eaed] px-4 py-10">
+          <div
+            className="print-hide absolute left-0 w-[18px]"
+            style={{ top: 70, height: PAGE_H }}
+          >
+            <LeftRuler
+              height={PAGE_H}
+              indentTop={indentTop}
+              onIndentTop={setIndentTopAll}
+            />
+          </div>
+          <div
+            className="editor-zoom-wrap"
+            style={{
+              transform: `scale(${zoom / 100})`,
+              transformOrigin: "top center",
+            }}
+          >
+            <div className="mx-auto w-fit">
+              <div className="print-hide flex">
+                <div className="w-6 shrink-0" />
+                <TopRuler
+                  width={PAGE_W}
+                  indentLeft={indentLeft}
+                  onIndentLeft={setIndentLeftAll}
+                />
+              </div>
+              <div className="ml-6">
+                <div className="print-area relative" style={{ width: PAGE_W }}>
+                  {pages.map((p, idx) => (
+                    <div
+                      key={p.key}
+                      ref={(el) => {
+                        if (el) {
+                          elsRef.current[p.key] = el;
+                          if (!editorRef.current) editorRef.current = el;
+                        } else {
+                          delete elsRef.current[p.key];
+                        }
+                      }}
+                      contentEditable={!viewOnly}
+                      suppressContentEditableWarning
+                      spellCheck
+                      className="print-page editable-area text-base leading-8 text-zinc-900 outline-none"
+                      style={{
+                        width: PAGE_W,
+                        height: PAGE_H,
+                        padding: `${indentTop}px ${PAD_R}px ${PAD_B}px ${indentLeft}px`,
+                        background: "#fff",
+                        border: "1px solid #e4e4e7",
+                        boxShadow: "0 1px 4px rgba(0,0,0,0.12)",
+                        marginBottom: GAP,
+                        overflow: "hidden",
+                      }}
+                      dangerouslySetInnerHTML={{ __html: p.html }}
+                      onFocus={(e) => {
+                        editorRef.current = e.currentTarget;
+                      }}
+                      onInput={(e) => {
+                        if (e.nativeEvent && e.nativeEvent.isComposing) return;
+                        htmlRef.current = readCombined();
+                        dirtyRef.current = true;
+                        setRev((r) => r + 1);
+                        scheduleRepaginate();
+                      }}
+                      onKeyDown={(e) => handleKeyDown(e, idx)}
+                    />
+                  ))}
+                  {firstEmpty ? (
+                    <div
+                      aria-hidden
+                      className="print-hide pointer-events-none absolute text-base leading-8 text-zinc-400"
+                      style={{ top: indentTop, left: indentLeft }}
+                    >
+                      
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        {commentsOpen && comments.length > 0 ? (
-          <div className="absolute right-4 top-4 w-72 rounded-lg border border-zinc-200 bg-white shadow-lg">
-            <div className="flex items-center justify-between border-b border-zinc-200 px-3 py-2">
-              <span className="text-sm font-semibold text-zinc-700">
-                Comments ({comments.length})
-              </span>
-              <button
-                type="button"
-                onClick={() => setCommentsOpen(false)}
-                className="rounded px-1 text-zinc-500 hover:bg-zinc-100"
-                title="Close"
-              >
-                ×
-              </button>
-            </div>
-            <div className="max-h-96 overflow-y-auto p-2">
-              {comments.map((c) => (
-                <div
-                  key={c.id}
-                  className="mb-2 rounded-md border border-zinc-100 bg-zinc-50 p-2"
+          {commentsOpen && comments.length > 0 ? (
+            <div className="absolute right-4 top-4 w-72 rounded-lg border border-zinc-200 bg-white shadow-lg">
+              <div className="flex items-center justify-between border-b border-zinc-200 px-3 py-2">
+                <span className="text-sm font-semibold text-zinc-700">
+                  Comments ({comments.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCommentsOpen(false)}
+                  className="rounded px-1 text-zinc-500 hover:bg-zinc-100"
+                  title="Close"
                 >
-                  <div className="mb-1 rounded bg-yellow-50 px-1.5 py-0.5 text-xs italic text-zinc-500">
-                    {c.sel.slice(0, 80)}
+                  ×
+                </button>
+              </div>
+              <div className="max-h-96 overflow-y-auto p-2">
+                {comments.map((c) => (
+                  <div
+                    key={c.id}
+                    className="mb-2 rounded-md border border-zinc-100 bg-zinc-50 p-2"
+                  >
+                    <div className="mb-1 rounded bg-yellow-50 px-1.5 py-0.5 text-xs italic text-zinc-500">
+                      {c.sel.slice(0, 80)}
+                    </div>
+                    <p className="text-xs text-zinc-700">{c.text}</p>
+                    <div className="mt-1 flex items-center justify-between">
+                      <span className="text-[10px] text-zinc-400">{c.time}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setComments((all) => all.filter((x) => x.id !== c.id))
+                        }
+                        className="text-[10px] text-zinc-400 hover:text-red-500"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
-                  <p className="text-xs text-zinc-700">{c.text}</p>
-                  <div className="mt-1 flex items-center justify-between">
-                    <span className="text-[10px] text-zinc-400">{c.time}</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setComments((all) => all.filter((x) => x.id !== c.id))
-                      }
-                      className="text-[10px] text-zinc-400 hover:text-red-500"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="editor-canvas flex flex-1 flex-col items-center overflow-auto bg-[#e8eaed] px-4 py-10">
+          <div className="mx-auto w-fit">
+            <Skeleton className="h-9 w-[808px] max-w-full rounded-sm bg-white/70" />
+            <div className="flex flex-col items-center rounded-lg border border-zinc-200 bg-white p-10 shadow-sm">
+              <Skeleton className="w-64 max-w-full" />
+              <Skeleton className="mt-2 w-40 max-w-full" />
+              <div className="mt-10 grid w-full gap-3">
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-3/4" />
+                <Skeleton className="mt-6 h-4 w-full" />
+                <Skeleton className="h-4 w-5/6" />
+              </div>
+            </div>
+            <div className="mt-4 flex items-center justify-center gap-2 text-sm text-zinc-400">
+              <Loader2 className="size-4 animate-spin" />
+              Loading document...
             </div>
           </div>
-        ) : null}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
