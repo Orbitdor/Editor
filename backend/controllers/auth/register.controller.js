@@ -1,34 +1,25 @@
+import jwt from "jsonwebtoken";
 import User from "../../models/User.model.js";
+import { ApiError } from "../../utils/ApiError.js";
+
+const SECRET = process.env.JWT_SECRET || "dev-secret";
+
 export const Register = async (req, res) => {
-    try {
-        const { name, email, password } = req.body;
+  const { name, email, password } = req.body;
 
-        const existingUser = await User.findOne({ email });
+  const existing = await User.findOne({ email: email.toLowerCase() });
+  if (existing) throw new ApiError(409, "Email already exists");
 
-        if (existingUser) {
-            return res.status(409).json({
-                message: "Email already exists"
-            });
-        }
+  const user = await User.create({ name, email, password });
+  const token = jwt.sign({ id: user._id, email: user.email }, SECRET, {
+    expiresIn: "7d",
+  });
 
-        const user = new User({
-            name,
-            email,
-            password
-        });
-
-        await user.save();
-
-        return res.status(201).json({
-            message: "User registered successfully",
-            user
-        });
-
-    } catch (error) {
-        return res.status(500).json({
-            message: error.message
-        });
-    }
+  res.status(201).json({
+    message: "User registered successfully",
+    token,
+    user: { id: user._id, name: user.name, email: user.email },
+  });
 };
 
 export default Register;

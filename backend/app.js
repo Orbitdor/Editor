@@ -2,15 +2,19 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import mongoose from "mongoose";
-import docRoutes from "./routes/doc.routes.js";
+import v1Router from "./routes/v1/index.js";
 import { connectDB, getDBError } from "./config/db.js";
+import { notFound, errorHandler, securityHeaders } from "./middleware/error.middleware.js";
 
 const app = express();
+
+app.set("trust proxy", 1);
+app.use(securityHeaders);
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "5mb" }));
 
 app.get("/", (_req, res) => {
-  res.json({ ok: true, name: "Doc Editor API" });
+  res.json({ ok: true, name: "Doc Editor API", version: "v1" });
 });
 
 app.get("/api/health", async (_req, res) => {
@@ -24,18 +28,10 @@ app.get("/api/health", async (_req, res) => {
   });
 });
 
-app.use("/api/documents", async (req, res, next) => {
-  const ok = await connectDB();
-  if (!ok) {
-    return res.status(503).json({
-      error: "Database not connected",
-      detail: getDBError(),
-    });
-  }
-  next();
-});
+app.use("/api/v1", v1Router);
 
-app.use("/api/documents", docRoutes);
+app.use(notFound);
+app.use(errorHandler);
 
 export { connectDB };
 export default app;

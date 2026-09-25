@@ -96,7 +96,7 @@ function Select({
       value={value ?? ""}
       onChange={(e) => onChange && onChange(e.target.value)}
       title={title}
-      className={`h-8 rounded-md border border-zinc-300 bg-white px-1.5 text-xs text-zinc-800 outline-none focus:border-blue-400 ${className}`}
+      className={`h-8 cursor-pointer rounded-md border border-zinc-300 bg-white px-1.5 text-xs text-zinc-800 outline-none focus:border-blue-400 ${className}`}
     >
       {emptyLabel ? <option value="">{emptyLabel}</option> : null}
       {options.map((o) => {
@@ -135,7 +135,7 @@ function Btn({
         e.preventDefault();
         onClick && onClick(e);
       }}
-      className={`flex h-8 min-w-8 items-center justify-center rounded-md px-1.5 text-zinc-700 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`flex h-8 min-w-8 cursor-pointer items-center justify-center rounded-md px-1.5 text-zinc-700 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 ${
         active ? "bg-blue-100 text-blue-700 ring-1 ring-blue-300" : ""
       } ${className}`}
     >
@@ -173,7 +173,7 @@ function IconDropdown({
           e.stopPropagation();
         }}
         onClick={() => setOpen((v) => !v)}
-        className="flex h-8 items-center gap-0.5 rounded-md px-1.5 text-zinc-700 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+        className="flex h-8 cursor-pointer items-center gap-0.5 rounded-md px-1.5 text-zinc-700 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
       >
         {currentIcon}
         <ChevronDown className="h-3 w-3 text-zinc-400" />
@@ -199,7 +199,7 @@ function IconDropdown({
                   onSelect && onSelect(val);
                   setOpen(false);
                 }}
-                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-zinc-100 ${
+                className={`flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-zinc-100 ${
                   value === val ? "text-blue-700" : "text-zinc-700"
                 }`}
               >
@@ -613,14 +613,14 @@ export default function Toolbar({
           <button
             type="button"
             onClick={doFind}
-            className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+            className="cursor-pointer rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
           >
             Find
           </button>
           <button
             type="button"
             onClick={closeFind}
-            className="rounded-md px-2 py-1.5 text-xs text-zinc-500 hover:bg-zinc-100"
+            className="cursor-pointer rounded-md px-2 py-1.5 text-xs text-zinc-500 hover:bg-zinc-100"
           >
             Close
           </button>
@@ -638,7 +638,7 @@ function MenuRow({ onClick, children }) {
         e.preventDefault();
         onClick();
       }}
-      className="flex w-full items-center px-3 py-1.5 text-left text-xs text-zinc-700 hover:bg-zinc-100"
+      className="flex w-full cursor-pointer items-center px-3 py-1.5 text-left text-xs text-zinc-700 hover:bg-zinc-100"
     >
       {children}
     </button>

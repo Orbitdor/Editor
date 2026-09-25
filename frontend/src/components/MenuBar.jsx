@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-export default function MenuBar({ onNew, onSave, onRename }) {
+export default function MenuBar({ onNew, onSave, onRename, onExport, onVersions, onTags }) {
   const [open, setOpen] = useState(null);
   const barRef = useRef(null);
 
@@ -22,7 +22,17 @@ export default function MenuBar({ onNew, onSave, onRename }) {
         { label: "Save", action: onSave },
         { label: "Rename", action: onRename },
         null,
-        { label: "Print", action: null },
+        {
+          label: "Download Markdown (.md)",
+          action: () => onExport?.("markdown"),
+        },
+        { label: "Download HTML (.html)", action: () => onExport?.("html") },
+        { label: "Download Plain text (.txt)", action: () => onExport?.("txt") },
+        null,
+        { label: "Version history", action: onVersions },
+        { label: "Tags", action: onTags },
+        null,
+        { label: "Print", action: () => window.print() },
       ],
     },
     {

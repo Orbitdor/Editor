@@ -3,12 +3,25 @@
 import { useEffect, useState, useRef, useCallback, useLayoutEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { getDoc, saveDoc, createDoc } from "@/lib/api";
+import { getDoc, saveDoc, createDoc, getDocVersions, restoreVersion, exportDocBlob, tagDoc } from "@/lib/api";
+import { getToken } from "@/lib/auth";
 import { TopRuler, LeftRuler } from "@/components/Rulers";
 import MenuBar from "@/components/MenuBar";
 import Toolbar from "@/components/Toolbar";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { toast } from "sonner";
+import { Loader2, History, Tag } from "lucide-react";
 
 const PAGE_W = 808;
 const PAGE_H = 1120;
@@ -159,6 +172,23 @@ function parseBreaks(html) {
   return { html: out.join(""), breaks: set };
 }
 
+function deriveTitle(html) {
+  const s = (html || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(div|p|h[1-6]|li|blockquote)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+  const line = s.split("\n").map((x) => x.trim()).find(Boolean) || "";
+  return line.length > 60 ? line.slice(0, 57).trimEnd() + "..." : line;
+}
+
+function isPlaceholderTitle(t) {
+  return !t || /^Untitled\d*$/.test(t);
+}
+
 export default function Editor() {
   const { id } = useParams();
   const router = useRouter();
@@ -172,6 +202,13 @@ export default function Editor() {
   const [comments, setComments] = useState([]);
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [pages, setPages] = useState([]);
+  const [saveState, setSaveState] = useState("saved");
+  const savingRef = useRef(false);
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [versions, setVersions] = useState([]);
+  const [tags, setTags] = useState([]);
+  const [tagsOpen, setTagsOpen] = useState(false);
+  const [tagsInput, setTagsInput] = useState("");
 
   const titleRef = useRef(null);
   const editorRef = useRef(null);
@@ -192,6 +229,37 @@ export default function Editor() {
       .map((p) => elsRef.current[p.key]?.innerHTML ?? p.html)
       .join("");
   }, []);
+
+  const resolveTitle = useCallback(() => {
+    if (isPlaceholderTitle(title)) {
+      const derived = deriveTitle(readCombined());
+      if (derived) {
+        setTitle(derived);
+        return derived;
+      }
+    }
+    return title;
+  }, [title, readCombined]);
+
+  const doSave = useCallback(async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaveState("saving");
+    const payload = {
+      title: resolveTitle(),
+      content: withBreaks(readCombined(), breaksPosRef.current),
+    };
+    try {
+      await saveDoc(id, payload);
+      dirtyRef.current = false;
+      setSaveState("saved");
+    } catch (err) {
+      console.error(err);
+      setSaveState("error");
+    } finally {
+      savingRef.current = false;
+    }
+  }, [id, readCombined, resolveTitle]);
 
   function captureCaret() {
     const sel = window.getSelection();
@@ -321,59 +389,139 @@ export default function Editor() {
   }
 
   function saveNow() {
-    dirtyRef.current = false;
-    saveDoc(id, {
-      title,
-      content: withBreaks(readCombined(), breaksPosRef.current),
-    }).catch((err) => console.error(err));
+    doSave();
   }
+
+  useEffect(() => {
+    if (!getToken()) {
+      router.replace("/login");
+      return;
+    }
+  }, [router]);
 
   useEffect(() => {
     loadedRef.current = loaded;
   }, [loaded]);
 
+  const loadDoc = useCallback(async () => {
+    const doc = await getDoc(id);
+    setTitle(
+      isPlaceholderTitle(doc.title)
+        ? deriveTitle(doc.content ?? "") || doc.title || "Untitled"
+        : doc.title
+    );
+    setTags(doc.tags || []);
+    const { html, breaks } = parseBreaks(doc.content ?? "");
+    breaksPosRef.current = breaks;
+    const out = paginate(html, indentLRef.current, indentTRef.current, breaks);
+    htmlRef.current = out.join("");
+    const next = out.map((h) => ({ key: genKey(), html: h }));
+    pagesRef.current = next;
+    setPages(next);
+    setLoaded(true);
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => scheduleRepaginate());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
   useEffect(() => {
-    getDoc(id)
-      .then((doc) => {
-        setTitle(doc.title ?? "Untitled");
-        const { html, breaks } = parseBreaks(doc.content ?? "");
-        breaksPosRef.current = breaks;
-        const out = paginate(
-          html,
-          indentLRef.current,
-          indentTRef.current,
-          breaks
-        );
-        htmlRef.current = out.join("");
-        const next = out.map((html) => ({ key: genKey(), html }));
-        pagesRef.current = next;
-        setPages(next);
-        setLoaded(true);
-        if (document.fonts && document.fonts.ready) {
-          document.fonts.ready.then(() => scheduleRepaginate());
-        }
-      })
-      .catch((err) => {
+    const raf = requestAnimationFrame(() => {
+      loadDoc().catch((err) => {
         console.error(err);
         const next = [{ key: genKey(), html: "" }];
         pagesRef.current = next;
         setPages(next);
         setLoaded(true);
       });
+    });
+    return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  function openVersions() {
+    getDocVersions(id)
+      .then((list) => {
+        setVersions(list);
+        setVersionsOpen(true);
+      })
+      .catch((err) => {
+        console.error(err);
+        toast.error(err.message || "Could not load versions");
+      });
+  }
+
+  async function handleRestore(version) {
+    if (
+      !window.confirm(
+        `Restore version v${version.version}? Current content will be saved as a new version first.`
+      )
+    ) {
+      return;
+    }
+    try {
+      await restoreVersion(id, version.version);
+      setVersionsOpen(false);
+      toast.success("Version restored");
+      setSaveState("saved");
+      await loadDoc();
+    } catch (err) {
+      console.error(err);
+      toast.error(err.message || "Could not restore version");
+    }
+  }
+
+  async function handleExport(format) {
+    try {
+      const blob = await exportDocBlob(id, format);
+      const ext = { markdown: "md", html: "html", txt: "txt" }[format] || "txt";
+      const name =
+        (title || "document").replace(/[^\w-]+/g, "_").toLowerCase() ||
+        "document";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${name}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      toast.error(err.message || "Could not export document");
+    }
+  }
+
+  function openTags() {
+    setTagsInput(tags.join(", "));
+    setTagsOpen(true);
+  }
+
+  async function saveTags() {
+    const list = tagsInput
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 20);
+    try {
+      const updated = await tagDoc(id, list);
+      setTags(updated.tags || list);
+      setTagsOpen(false);
+      toast.success("Tags updated");
+    } catch (err) {
+      console.error(err);
+      toast.error(err.message || "Could not save tags");
+    }
+  }
 
   useEffect(() => {
     if (!loaded || !dirtyRef.current) return;
     const t = setTimeout(() => {
-      dirtyRef.current = false;
-      saveDoc(id, {
-        title,
-        content: withBreaks(readCombined(), breaksPosRef.current),
-      }).catch((err) => console.error(err));
+      doSave();
     }, 1000);
     return () => clearTimeout(t);
-  }, [rev, title, id, loaded]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rev, title, id, loaded, resolveTitle]);
 
   function addComment() {
     const sel = window.getSelection()?.toString().trim();
@@ -468,8 +616,8 @@ export default function Editor() {
     !pages[0].html.replace(/<[^>]+>/g, "").trim();
 
   return (
-    <div className="flex flex-1 flex-col">
-      <div className="border-b border-zinc-200 bg-white">
+    <div className="flex h-dvh flex-col">
+      <div className="sticky top-0 z-30 border-b border-zinc-200 bg-white">
         <div className="flex items-center gap-3 px-4 py-2">
           <Link
             href="/"
@@ -494,22 +642,63 @@ export default function Editor() {
               Doc Editor
             </span>
           </Link>
-          <input
+          <Input
             ref={titleRef}
             value={title}
             readOnly={viewOnly}
+            size={title.length ? title.length + 1 : 8}
             onChange={(e) => {
               setTitle(e.target.value);
               dirtyRef.current = true;
             }}
-            className="min-w-0 flex-1 rounded-md border border-transparent px-2 py-1 text-sm font-medium outline-none focus:border-blue-400"
+            className="h-7 w-auto min-w-[3rem] max-w-[60%] px-2 py-1 text-sm font-medium [field-sizing:content]"
             placeholder="Untitled"
           />
+          {loaded ? (
+            <Badge
+              variant={saveState === "error" ? "destructive" : "outline"}
+              className="text-xs font-normal"
+            >
+              {saveState === "saving"
+                ? "Saving..."
+                : saveState === "error"
+                  ? "Save failed"
+                  : "Saved"}
+            </Badge>
+          ) : null}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={openVersions}
+            title="Version history"
+          >
+            <History />
+            History
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={openTags}
+            title="Edit tags"
+          >
+            <Tag />
+            Tags
+            {tags.length ? (
+              <Badge variant="secondary" className="px-1.5 text-[10px]">
+                {tags.length}
+              </Badge>
+            ) : null}
+          </Button>
         </div>
         <MenuBar
           onNew={handleNew}
           onSave={saveNow}
           onRename={() => titleRef.current?.focus()}
+          onExport={handleExport}
+          onVersions={openVersions}
+          onTags={openTags}
         />
         <Toolbar
           editorRef={editorRef}
@@ -649,6 +838,80 @@ export default function Editor() {
                 ))}
               </div>
             </div>
+          ) : null}
+          {versionsOpen ? (
+            <Dialog open={versionsOpen} onOpenChange={setVersionsOpen}>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Version history</DialogTitle>
+                  <DialogDescription>
+                    Restore any earlier version of this document.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="max-h-96 space-y-2 overflow-y-auto">
+                  {versions.length === 0 ? (
+                    <p className="py-4 text-sm text-zinc-500">
+                      No versions yet.
+                    </p>
+                  ) : (
+                    versions.map((v) => (
+                      <div
+                        key={v._id}
+                        className="flex items-start justify-between gap-3 rounded-md border border-zinc-200 p-3"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-zinc-800">
+                            v{v.version}
+                          </div>
+                          <div className="mt-0.5 truncate text-xs text-zinc-500">
+                            {v.title || "Untitled"}
+                          </div>
+                          <div className="text-[10px] text-zinc-400">
+                            {new Date(v.updatedAt).toLocaleString()}
+                          </div>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleRestore(v)}
+                        >
+                          Restore
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </DialogContent>
+            </Dialog>
+          ) : null}
+          {tagsOpen ? (
+            <Dialog open={tagsOpen} onOpenChange={setTagsOpen}>
+              <DialogContent className="sm:max-w-sm">
+                <DialogHeader>
+                  <DialogTitle>Tags</DialogTitle>
+                  <DialogDescription>
+                    Comma-separated tags to organize this document.
+                  </DialogDescription>
+                </DialogHeader>
+                <Input
+                  value={tagsInput}
+                  onChange={(e) => setTagsInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") saveTags();
+                  }}
+                  placeholder="project, notes"
+                />
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    onClick={() => setTagsOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button onClick={saveTags}>Save</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           ) : null}
         </div>
       ) : (
