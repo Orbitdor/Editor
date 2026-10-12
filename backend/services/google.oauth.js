@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import GoogleConnection from "../models/GoogleConnection.model.js";
+import OAuthState from "../models/OAuthState.model.js";
 import User from "../models/User.model.js";
 import { ApiError } from "../utils/ApiError.js";
 import { signAccessToken } from "./token.service.js";
@@ -28,44 +29,48 @@ import {
 
 const STATE_TTL_MS = 10 * 60 * 1000;
 
-/** Per-process map of issued state values, so a callback can be validated. */
-const pendingStates = new Map();
-
 /**
  * Issue a single-use state value that remembers where to return after consent.
  *
+ * Persisted rather than kept in memory: the redirect and the callback are two
+ * requests that a serverless host may route to different instances.
+ *
  * @param {{flow: "auth"|"connect", returnTo: string, groups?: string[], userId?: string}} data
- * @returns {string}
+ * @returns {Promise<string>}
  */
-function issueState(data) {
+async function issueState(data) {
   const nonce = crypto.randomBytes(24).toString("base64url");
-  pendingStates.set(nonce, { ...data, expiresAt: Date.now() + STATE_TTL_MS });
-  pruneStates();
+  await OAuthState.create({
+    _id: nonce,
+    kind: "state",
+    flow: data.flow,
+    returnTo: data.returnTo,
+    groups: data.groups || undefined,
+    userId: data.userId ? String(data.userId) : null,
+    expiresAt: new Date(Date.now() + STATE_TTL_MS),
+  });
   return nonce;
 }
 
-/** Drop expired and excess state values so the map cannot grow unbounded. */
-function pruneStates() {
-  const now = Date.now();
-  for (const [key, value] of pendingStates) {
-    if (value.expiresAt < now) pendingStates.delete(key);
-  }
-  // A burst of connects should not keep every entry alive for the full TTL.
-  while (pendingStates.size > 500) {
-    pendingStates.delete(pendingStates.keys().next().value);
-  }
-}
-
-/** Consume a state value, throwing if it is unknown, reused or expired. */
-function consumeState(state) {
+/**
+ * Consume a state value, throwing if it is unknown, reused or expired.
+ *
+ * The read is an atomic delete, which is what keeps a replayed callback from
+ * exchanging the same code a second time.
+ */
+async function consumeState(state) {
   if (!state) throw new ApiError(400, "Missing state parameter");
-  const entry = pendingStates.get(state);
-  // Deleted either way: a state value is single-use, which is what stops a
-  // replayed callback from exchanging a code a second time.
-  pendingStates.delete(state);
+  const entry = await OAuthState.findOneAndDelete({ _id: String(state), kind: "state" });
   if (!entry) throw new ApiError(400, "This sign-in link has expired. Please try again.");
-  if (entry.expiresAt < Date.now()) throw new ApiError(400, "This sign-in link has expired.");
-  return entry;
+  if (entry.expiresAt.getTime() < Date.now()) {
+    throw new ApiError(400, "This sign-in link has expired.");
+  }
+  return {
+    flow: entry.flow,
+    returnTo: entry.returnTo,
+    groups: entry.groups,
+    userId: entry.userId,
+  };
 }
 
 /** Only allow redirects back to our own frontend. */
@@ -83,28 +88,34 @@ function safeReturnTo(value) {
  * up in history, proxy logs and `Referer` headers. Instead the callback mints a
  * single-use ticket that the frontend redeems over POST for the token.
  *
- * Like the state map this is per-process, which is fine for a single instance
- * and behind one load balancer; a multi-instance deployment would move it to
- * Redis or a signed short-lived token.
+ * Persisted for the same reason as the state value: redeeming is a separate
+ * request that a serverless host may route to another instance.
  */
 const TICKET_TTL_MS = 60 * 1000;
-const pendingTickets = new Map();
 
-export function issueTicket(session) {
+export async function issueTicket(session) {
   const ticket = crypto.randomBytes(24).toString("base64url");
-  pendingTickets.set(ticket, { session, expiresAt: Date.now() + TICKET_TTL_MS });
-  while (pendingTickets.size > 500) {
-    pendingTickets.delete(pendingTickets.keys().next().value);
-  }
+  // The access token is not stored: redeeming re-opens the session from the user
+  // id, so persisting a credential would serve no purpose.
+  const payload = { ...session };
+  delete payload.token;
+  await OAuthState.create({
+    _id: ticket,
+    kind: "ticket",
+    returnTo: payload.returnTo || "/",
+    session: payload,
+    expiresAt: new Date(Date.now() + TICKET_TTL_MS),
+  });
   return ticket;
 }
 
 /** Redeem a ticket exactly once, or throw. */
-export function consumeTicket(ticket) {
-  const entry = pendingTickets.get(ticket);
-  pendingTickets.delete(ticket);
+export async function consumeTicket(ticket) {
+  const entry = await OAuthState.findOneAndDelete({ _id: String(ticket), kind: "ticket" });
   if (!entry) throw new ApiError(400, "This sign-in link has expired. Please try again.");
-  if (entry.expiresAt < Date.now()) throw new ApiError(400, "This sign-in link has expired.");
+  if (entry.expiresAt.getTime() < Date.now()) {
+    throw new ApiError(400, "This sign-in link has expired.");
+  }
   return entry.session;
 }
 
@@ -127,14 +138,20 @@ function authorizeUrl({ state, groups, prompt, redirectUri }) {
   return `${cfg.authUrl}?${params.toString()}`;
 }
 
-/** Exchange an authorization code for tokens. */
-async function exchangeCode(code) {
+/**
+ * Exchange an authorization code for tokens.
+ *
+ * `redirectUri` must be the exact value the authorize request used: Google
+ * rejects the exchange with `redirect_uri_mismatch` otherwise. Sign-in and
+ * connect use different callbacks, so the caller states which one it was.
+ */
+async function exchangeCode(code, redirectUri) {
   const cfg = googleConfig();
   const body = new URLSearchParams({
     code,
     client_id: cfg.clientId,
     client_secret: cfg.clientSecret,
-    redirect_uri: cfg.redirectUri,
+    redirect_uri: redirectUri || cfg.redirectUri,
     grant_type: "authorization_code",
   });
 
@@ -225,13 +242,13 @@ function mockIdentity(code) {
  * @param {{returnTo?: string}} [params]
  * @returns {{url: string, mock: boolean}}
  */
-export function startSignIn({ returnTo } = {}) {
+export async function startSignIn({ returnTo } = {}) {
   const cfg = googleConfig();
   if (!isGoogleConfigured(cfg) && !cfg.allowMock) {
     throw new ApiError(503, "Google sign-in is not configured on this server.");
   }
 
-  const state = issueState({ flow: "auth", returnTo: safeReturnTo(returnTo) });
+  const state = await issueState({ flow: "auth", returnTo: safeReturnTo(returnTo) });
   return {
     url: authorizeUrl({
       state,
@@ -259,11 +276,13 @@ export function startSignIn({ returnTo } = {}) {
  */
 export async function completeSignIn({ code, state }) {
   if (!code) throw new ApiError(400, "Missing authorization code");
-  const entry = consumeState(state);
+  const entry = await consumeState(state);
   if (entry.flow !== "auth") throw new ApiError(400, "This callback does not match the sign-in flow");
 
   const cfg = googleConfig();
-  const tokens = isGoogleConfigured(cfg) ? await exchangeCode(code) : mockExchange(code);
+  const tokens = isGoogleConfigured(cfg)
+    ? await exchangeCode(code, cfg.signInRedirectUri)
+    : mockExchange(code);
   const identity = isGoogleConfigured(cfg)
     ? await fetchIdentity(tokens.access_token)
     : mockIdentity(code);
@@ -339,9 +358,9 @@ export async function completeSignIn({ code, state }) {
  *
  * @param {string} userId
  * @param {string[]} groups Scope groups, e.g. `["drive", "docs"]`.
- * @returns {{url: string, mock: boolean}}
+ * @returns {Promise<{url: string, mock: boolean}>}
  */
-export function startConnect(userId, groups) {
+export async function startConnect(userId, groups) {
   const cfg = googleConfig();
   if (!isGoogleConfigured(cfg) && !cfg.allowMock) {
     throw new ApiError(503, "Google integration is not configured on this server.");
@@ -355,7 +374,7 @@ export function startConnect(userId, groups) {
     );
   }
 
-  const state = issueState({
+  const state = await issueState({
     flow: "connect",
     groups: Array.isArray(groups) ? groups : [groups],
     userId: String(userId),
@@ -376,13 +395,13 @@ export function startConnect(userId, groups) {
  */
 export async function completeConnect({ code, state }) {
   if (!code) throw new ApiError(400, "Missing authorization code");
-  const entry = consumeState(state);
+  const entry = await consumeState(state);
   if (entry.flow !== "connect" || !entry.userId) {
     throw new ApiError(400, "This callback does not match the connect flow");
   }
 
   const cfg = googleConfig();
-  const tokens = isGoogleConfigured(cfg) ? await exchangeCode(code) : mockExchange(code);
+  const tokens = isGoogleConfigured(cfg) ? await exchangeCode(code, cfg.redirectUri) : mockExchange(code);
 
   let connection = await GoogleConnection.findOne({ user: entry.userId, provider: "google" });
 

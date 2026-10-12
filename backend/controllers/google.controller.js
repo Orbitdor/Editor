@@ -28,12 +28,12 @@ export const getStatus = async (req, res) => {
 };
 
 /** GET /api/v1/integrations/google/start?groups=drive,docs -> consent URL */
-export const startConnect = (req, res) => {
+export const startConnect = async (req, res) => {
   const groups = String(req.query.groups || "")
     .split(",")
     .map((g) => g.trim())
     .filter(Boolean);
-  res.json(oauth.startConnect(req.user.id, groups));
+  res.json(await oauth.startConnect(req.user.id, groups));
 };
 
 /** GET /api/v1/integrations/google/callback -> the OAuth redirect target */
@@ -90,8 +90,8 @@ export const exportDoc = async (req, res) => {
  */
 
 /** GET /api/v1/auth/google/start -> consent URL for authentication */
-export const startSignIn = (req, res) => {
-  res.json(oauth.startSignIn({ returnTo: req.query.returnTo }));
+export const startSignIn = async (req, res) => {
+  res.json(await oauth.startSignIn({ returnTo: req.query.returnTo }));
 };
 
 /** GET /api/v1/auth/google/callback -> the app's own JWT, plus the user */
@@ -119,7 +119,7 @@ export const signInCallback = async (req, res) => {
     });
   }
 
-  const ticket = oauth.issueTicket(result);
+  const ticket = await oauth.issueTicket(result);
   const target = new URL("/auth/google/callback", googleConfig().frontendUrl);
   target.searchParams.set("ticket", ticket);
   return res.redirect(302, target.toString());
@@ -134,7 +134,7 @@ export const exchangeTicket = async (req, res) => {
   const { ticket } = req.body || {};
   if (!ticket) throw new ApiError(400, "Missing ticket");
 
-  const session = oauth.consumeTicket(ticket);
+  const session = await oauth.consumeTicket(ticket);
 
   // The cookie is set here rather than on the OAuth redirect, because a browser
   // is not guaranteed to keep a SameSite=Strict cookie handed to it by a
