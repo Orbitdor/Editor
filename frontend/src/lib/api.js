@@ -4,7 +4,15 @@ import { clearSession } from "@/lib/auth";
 // rewrite proxy (see next.config.mjs). That keeps the HttpOnly session cookie
 // first-party in every environment; set NEXT_PUBLIC_API_URL only to bypass the
 // proxy and call an API host directly.
-const API_ROOT = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
+//
+// A production build must never talk to localhost: a stale build-time value
+// like that is exactly how a deployed app ends up firing at the visitor's own
+// machine. Localhost is therefore ignored outside development.
+const CONFIGURED_API_URL = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+const IS_LOCALHOST = /(^|\/\/)(localhost|127\.0\.0\.1)(:|\/|$)/.test(CONFIGURED_API_URL);
+const API_ROOT = (
+  process.env.NODE_ENV === "production" && IS_LOCALHOST ? "" : CONFIGURED_API_URL
+).replace(/\/+$/, "");
 
 const BASE = `${API_ROOT}/api/v1/documents`;
 const AUTH = `${API_ROOT}/api/v1/auth`;
