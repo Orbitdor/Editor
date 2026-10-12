@@ -2,6 +2,7 @@ import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { prosemirrorJSONToYXmlFragment, prosemirrorToYXmlFragment } from "@tiptap/y-tiptap";
 import { DOMParser as ProseDOMParser } from "@tiptap/pm/model";
+import { WS_BASE } from "./ws-base.js";
 
 export const CURSOR_COLORS = [
   "#958DF1",
@@ -15,16 +16,6 @@ export const CURSOR_COLORS = [
   "#EAECCC",
   "#FCCFE9",
 ];
-
-// Realtime collaboration needs a long-lived WebSocket server. A serverless host
-// (Vercel functions) cannot upgrade a connection, so in production with no
-// explicit NEXT_PUBLIC_WS_URL the editor runs in local mode: edits still save
-// over HTTP, only live sync and cursors are unavailable. Local dev keeps
-// talking to the API on :5000.
-const WS_BASE = (
-  process.env.NEXT_PUBLIC_WS_URL ||
-  (process.env.NODE_ENV === "production" ? "" : "ws://localhost:5000/ws")
-).replace(/\/$/, "");
 
 const entries = new Map();
 

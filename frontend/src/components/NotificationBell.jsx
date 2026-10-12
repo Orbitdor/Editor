@@ -5,10 +5,17 @@ import { useRouter } from "next/navigation";
 import { Bell, CheckCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getNotifications, markNotificationsRead } from "@/lib/api";
+import { subscribeNotifications, NOTIFICATIONS_REALTIME } from "@/lib/notifications-socket";
 import { cn } from "@/lib/utils";
 
-/** Poll interval for the unread badge, in milliseconds. */
-const POLL_MS = 30_000;
+/**
+ * Resync interval for the unread badge.
+ *
+ * Where a realtime socket exists this is only a slow safety net (a dropped
+ * socket while the tab slept). Without one it is the primary refresh path and
+ * has to be frequent enough to feel live.
+ */
+const POLL_MS = NOTIFICATIONS_REALTIME ? 5 * 60_000 : 30_000;
 
 /** Icon-free label per notification type. */
 const TYPE_LABEL = {
@@ -31,9 +38,10 @@ function timeAgo(value) {
 /**
  * Header notification bell.
  *
- * Polls the API on an interval rather than holding a socket open: notifications
- * are not latency-critical, and this keeps one WebSocket per editor tab instead
- * of two. The dropdown closes on an outside click.
+ * Updates come over a realtime socket when one is available, so the badge reacts
+ * to a mention the moment it lands. Where the deployment has no WebSocket host
+ * (a serverless platform cannot upgrade a connection) it falls back to a poll,
+ * and either way the fetch is skipped while the tab is hidden.
  */
 export default function NotificationBell() {
   const router = useRouter();
@@ -56,14 +64,31 @@ export default function NotificationBell() {
     }
   }, []);
 
-  // Initial load + polling. `loading` is what the empty state reads, so the
-  // effect only needs to register the timer.
+  // Initial load, then push updates over the socket. A slow interval and a
+  // focus listener act as the fallback when there is no socket, and as a safety
+  // net when one exists but silently dropped.
   useEffect(() => {
     const kickoff = setTimeout(load, 0);
-    const timer = setInterval(load, POLL_MS);
+
+    const unsubscribe = subscribeNotifications(() => load());
+
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, POLL_MS);
+
+    // Catch up the moment the user comes back to the tab.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+
     return () => {
       clearTimeout(kickoff);
       clearInterval(timer);
+      unsubscribe();
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
     };
   }, [load]);
 

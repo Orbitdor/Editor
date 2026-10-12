@@ -1,5 +1,6 @@
 import Notification from "../models/Notification.model.js";
 import User from "../models/User.model.js";
+import { publishToUsers } from "../websocket/notify.server.js";
 
 /** Hard cap so a misbehaving client can never flood the collection. */
 const MAX_PER_BATCH = 50;
@@ -30,6 +31,14 @@ export async function notifyMany(userIds, payload) {
         text: payload.text,
       }))
     );
+
+    // Wake any open tab of the recipient so the badge updates without a poll.
+    // Best-effort: a user with no socket is served by their next fetch.
+    publishToUsers(targets, {
+      type: "notification",
+      notificationType: payload.type,
+      documentId: payload.document ? String(payload.document) : null,
+    });
   } catch (err) {
     // Duplicate key or validation issue: log and continue.
     console.error("[notify] create failed:", err?.message);
