@@ -4,7 +4,7 @@ import { validateSchema, required, isString, isId, maxLen } from "../../middlewa
 import { rateLimit, securityHeaders } from "../../middleware/error.middleware.js";
 import { Login } from "../../controllers/auth/login.controller.js";
 import { Register } from "../../controllers/auth/register.controller.js";
-import { Logout, LogoutAll, Refresh, RevokeSession, Sessions } from "../../controllers/auth/session.controller.js";
+import { Logout, LogoutAll, Refresh, RevokeSession, Sessions, SocketToken } from "../../controllers/auth/session.controller.js";
 import { startSignIn, signInCallback, exchangeTicket } from "../../controllers/google.controller.js";
 
 const r = Router();
@@ -57,6 +57,9 @@ r.post(
 r.post("/refresh", signInLimit, Refresh);
 r.post("/logout", signInLimit, Logout);
 r.get("/sessions", requireAuth, Sessions);
+// A short-lived token for the notification WebSocket, which may live on a
+// different origin than the session cookie and so cannot authenticate by cookie.
+r.get("/socket-token", requireAuth, signInLimit, SocketToken);
 r.delete("/sessions/:sessionId", requireAuth, validateSchema({ sessionId: [isId()] }, "params"), RevokeSession);
 r.post("/logout-all", requireAuth, signInLimit, LogoutAll);
 

@@ -86,6 +86,17 @@ export async function getSessions() {
   return request(`${AUTH}/sessions`);
 }
 
+/**
+ * A short-lived token for the notification WebSocket.
+ *
+ * The socket is opened against the API host directly, which is a different origin
+ * from the one that holds the session cookie, so the cookie cannot ride along.
+ * This same-origin call mints a token the socket can present instead.
+ */
+export async function getSocketToken() {
+  return request(`${AUTH}/socket-token`);
+}
+
 /** Revoke one device by id. */
 export async function revokeSession(sessionId) {
   return request(`${AUTH}/sessions/${sessionId}`, { method: "DELETE" });

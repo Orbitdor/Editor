@@ -2,6 +2,7 @@ import { ApiError } from "../../utils/ApiError.js";
 import { hashToken } from "../../models/Session.model.js";
 import {
   REFRESH_COOKIE,
+  SOCKET_TTL_SECONDS,
   attachCookies,
   clearAuthCookies,
   listSessions,
@@ -10,6 +11,7 @@ import {
   revokeSession,
   revokeSessionById,
   rotateSession,
+  signSocketToken,
 } from "../../services/token.service.js";
 
 /**
@@ -70,6 +72,16 @@ export const Sessions = async (req, res) => {
 /** Revoke one session by id (used by "sign out this device"). */
 export const RevokeSession = async (req, res) => {
   const revoked = await revokeSessionById(req.user.id, req.params.sessionId);
-  if (!revoked) throw new ApiError(404, "Session not found");
-  res.json({ message: "Session revoked", sessionId: req.params.sessionId });
+  res.json({ revoked });
+};
+
+/**
+ * Mint a short-lived token for the notification WebSocket.
+ *
+ * The socket may be hosted on a different origin than the cookie that proves the
+ * session, so it cannot authenticate by cookie. The browser calls this over the
+ * same-origin API (cookie included) and passes the token in the socket URL.
+ */
+export const SocketToken = async (req, res) => {
+  res.json({ token: signSocketToken(req.user), expiresIn: SOCKET_TTL_SECONDS });
 };

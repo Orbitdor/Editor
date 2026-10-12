@@ -1,28 +1,31 @@
-import { WS_BASE } from "./ws-base.js";
+import { NOTIFY_WS_BASE } from "./ws-base.js";
+import { getSocketToken } from "./api.js";
 
 /**
- * Is a realtime transport available at all in this build?
+ * Is a realtime notification transport configured in this build?
  *
- * False on a serverless deployment with no `NEXT_PUBLIC_WS_URL`, where callers
- * must fall back to HTTP polling.
+ * False when no socket host is set, in which case the bell falls back to polling.
  */
-export const NOTIFICATIONS_REALTIME = Boolean(WS_BASE);
+export const NOTIFICATIONS_REALTIME = Boolean(NOTIFY_WS_BASE);
 
 /**
  * Subscribe to the per-user notification channel.
  *
  * The server pushes a small event whenever something new lands for the signed-in
- * user, so the badge updates without a poll. The socket is authenticated by the
- * same HttpOnly session cookie as the REST API, so no token is put in the URL.
+ * user, so the badge updates without a poll.
  *
- * Returns an unsubscribe function. It reconnects with capped backoff, and is a
- * no-op when there is no realtime transport.
+ * The socket may live on a different origin than the one holding the session
+ * cookie, so a short-lived token is fetched first (over the same-origin API) and
+ * passed in the query string. The token is refreshed on every reconnect.
+ *
+ * Returns an unsubscribe function. Reconnects with capped backoff, and is a no-op
+ * when no realtime transport is configured.
  *
  * @param {(event: {type: string}) => void} onEvent
  * @returns {() => void}
  */
 export function subscribeNotifications(onEvent) {
-  if (typeof window === "undefined" || !WS_BASE) return () => {};
+  if (typeof window === "undefined" || !NOTIFY_WS_BASE) return () => {};
 
   let socket = null;
   let retryTimer = null;
@@ -36,10 +39,26 @@ export function subscribeNotifications(onEvent) {
     retryTimer = setTimeout(connect, delay);
   }
 
-  function connect() {
+  async function connect() {
     if (stopped) return;
+
+    let token = "";
     try {
-      socket = new WebSocket(`${WS_BASE}/notifications`);
+      const data = await getSocketToken();
+      token = data?.token || "";
+    } catch {
+      // Not signed in, or offline: try again later rather than looping hot.
+      schedule();
+      return;
+    }
+    if (stopped) return;
+
+    const url = `${NOTIFY_WS_BASE}/notifications${
+      token ? `?token=${encodeURIComponent(token)}` : ""
+    }`;
+
+    try {
+      socket = new WebSocket(url);
     } catch {
       schedule();
       return;

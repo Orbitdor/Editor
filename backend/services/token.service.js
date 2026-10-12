@@ -63,6 +63,25 @@ export function signAccessToken(user) {
 }
 
 /**
+ * A short-lived token for authenticating a WebSocket handshake.
+ *
+ * A browser opening a socket to a different origin than the one that set the
+ * session cookie cannot present that cookie (it is HttpOnly, host-scoped, and
+ * SameSite=Strict), so the client fetches a token here over the normal same-origin
+ * API and passes it in the socket URL. It is deliberately short-lived: a token
+ * that leaks into a proxy access log is useless within a couple of minutes.
+ */
+export const SOCKET_TTL_SECONDS = Number(process.env.JWT_SOCKET_TTL_SECONDS) || 120;
+
+export function signSocketToken(user) {
+  return jwt.sign(
+    { id: user._id ?? user.id, email: user.email, scope: "socket" },
+    SECRET,
+    { expiresIn: SOCKET_TTL_SECONDS }
+  );
+}
+
+/**
  * Create a device session and return `{ accessToken, refreshToken, session }`.
  * The refresh token is returned exactly once: only its digest is persisted.
  */
