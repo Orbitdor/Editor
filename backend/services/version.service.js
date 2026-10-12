@@ -1,6 +1,6 @@
 import DocumentVersion from "../models/DocumentVersion.model.js";
-import Document from "../models/doc.model.js";
 import { ApiError } from "../utils/ApiError.js";
+import { authorize, authorizeEdit } from "./access.service.js";
 
 const MAX_VERSIONS_PER_DOC = 50;
 
@@ -27,23 +27,24 @@ export async function snapshotDocument(doc, userId) {
   }
 }
 
+/**
+ * Version history. Viewers and commenters can read history (useful for
+ * context), but only editors can restore a version.
+ */
 export async function listVersions(documentId, userId) {
-  const doc = await Document.findById(documentId);
-  if (!doc) throw new ApiError(404, "Document not found");
-  if (!doc.owns(userId)) throw new ApiError(403, "Access denied");
+  await authorize(documentId, userId, "viewer");
   return DocumentVersion.find({ document: documentId })
     .sort("-version")
     .select("version title plainText savedBy updatedAt");
 }
 
 export async function restoreVersion(documentId, userId, version) {
-  const doc = await Document.findById(documentId);
-  if (!doc) throw new ApiError(404, "Document not found");
-  if (!doc.owns(userId)) throw new ApiError(403, "Access denied");
+  const { doc } = await authorizeEdit(documentId, userId);
 
   const v = await DocumentVersion.findOne({ document: documentId, version });
   if (!v) throw new ApiError(404, "Version not found");
 
+  // Keep the current state in history before rolling back.
   await snapshotDocument(doc, userId);
   doc.title = v.title || doc.title;
   doc.content = v.content || "";

@@ -16,7 +16,17 @@ export const connectDB = async () => {
   }
   if (!cached) {
     cached = mongoose
-      .connect(process.env.MONGO_URI, { serverSelectionTimeoutMS: 10000 })
+      .connect(process.env.MONGO_URI, {
+        // The hosted cluster idles connections out, so allow the driver time to
+        // pick a server again instead of failing the first request it wakes up.
+        serverSelectionTimeoutMS: 15000,
+        connectTimeoutMS: 15000,
+        maxPoolSize: 20,
+        minPoolSize: 2,
+        // Retry transient topology errors rather than surfacing them to callers.
+        retryReads: true,
+        retryWrites: true,
+      })
       .then(() => true)
       .catch((err) => {
         lastError = err.message;

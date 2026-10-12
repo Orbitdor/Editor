@@ -1,14 +1,13 @@
 "use client";
 
-import { useTheme } from "next-themes";
 import { Toaster as Sonner } from "sonner";
 
 function Toaster({ ...props }) {
-  const { theme = "system" } = useTheme();
-
   return (
     <Sonner
-      theme={theme}
+      // Fixed to light: the app no longer mounts a theme provider, so reading a
+      // theme would fall back to a default that nothing can change.
+      theme="light"
       className="toaster group"
       style={
         {

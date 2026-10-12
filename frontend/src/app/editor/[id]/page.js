@@ -1,17 +1,59 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, useLayoutEffect } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { getDoc, saveDoc, createDoc, getDocVersions, restoreVersion, exportDocBlob, tagDoc } from "@/lib/api";
-import { getToken } from "@/lib/auth";
+import { EditorContent, useEditor } from "@tiptap/react";
+import {
+  getDoc,
+  saveDoc,
+  createDoc,
+  getDocVersions,
+  restoreVersion,
+  exportDocBlob,
+  tagDoc,
+  getComments,
+  createComment,
+  replyToComment,
+  editComment,
+  resolveComment,
+  deleteComment,
+} from "@/lib/api";
+import { getUser, clearSession } from "@/lib/auth";
+import { buildExtensions, deriveTitle, isPlaceholderTitle } from "@/lib/tiptap";
+import { getMentionRenderer } from "@/lib/mention-render";
+import {
+  createCollab,
+  destroyCollab,
+  reviveCollab,
+  seedCollab,
+  subscribeCollabUsers,
+  subscribeCollabStatus,
+  onCollabSync,
+  collabUserInfo,
+} from "@/lib/editor-sync";
 import { TopRuler, LeftRuler } from "@/components/Rulers";
 import MenuBar from "@/components/MenuBar";
 import Toolbar from "@/components/Toolbar";
+import CommentsPanel from "@/components/CommentsPanel";
+import ShareDialog from "@/components/ShareDialog";
+import SaveTemplateDialog from "@/components/SaveTemplateDialog";
+import NotificationBell from "@/components/NotificationBell";
+import UserMenu from "@/components/UserMenu";
+import AiPanel from "@/components/AiPanel";
+import VoicePanel from "@/components/VoicePanel";
+import OcrDialog from "@/components/OcrDialog";
+import IntegrationCenter, { IntegrationCenterButton } from "@/components/integration-center";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+} from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -21,173 +63,68 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Loader2, History, Tag } from "lucide-react";
+import { History, Loader2, MessageSquare, Mic, ScanText, Share2, Sparkles, Tag } from "lucide-react";
+import { cn } from "@/lib/utils";
 
-const PAGE_W = 808;
-const PAGE_H = 1120;
+function initials(name) {
+  const chars = String(name || "?")
+    .normalize("NFKD")
+    .replace(/[^\p{L}\p{N} ]/gu, "");
+  const parts = chars.split(/\s+/).filter(Boolean);
+  if (!parts.length) return "?";
+  return parts
+    .slice(0, 2)
+    .map((w) => (w[0] || "").toUpperCase())
+    .join("");
+}
+
+/**
+ * Icon-only header action with a hover tooltip.
+ *
+ * The header carries four utility actions (AI, dictation, OCR, comments) that a
+ * document editor keeps as glyphs; a text label on each one pushes the share
+ * controls off a laptop screen. `active` marks the panel that is currently open
+ * and reads as selected rather than the flat grey `variant="secondary"` gave us,
+ * and `badge` keeps the unresolved-comment count on the glyph instead of an
+ * inline badge that made the button resize.
+ */
+function HeaderIconBtn({ label, active = false, badge = 0, disabled, onClick, children }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          disabled={disabled}
+          onClick={onClick}
+          aria-label={label}
+          aria-pressed={active}
+          className={cn(
+            "relative text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900",
+            active && "bg-zinc-100 text-zinc-900"
+          )}
+        >
+          {children}
+          {badge > 0 ? (
+            <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-semibold leading-none text-white">
+              {badge > 99 ? "99+" : badge}
+            </span>
+          ) : null}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+const PAGE_W = 794;
+const PAGE_H = 1123;
 const PAD_R = 72;
 const PAD_B = 72;
-const GAP = 16;
-const BREAK = '<div data-pagebreak="1"></div>';
 
-let keySeq = 0;
-const genKey = () => `p${++keySeq}`;
-
-function isBreakNode(node) {
-  return node.nodeType === 1 && node.getAttribute("data-pagebreak") === "1";
-}
-
-function textLen(el) {
-  const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  let n;
-  let len = 0;
-  while ((n = w.nextNode())) len += n.nodeValue.length;
-  return len;
-}
-
-function offsetIn(el, node, off) {
-  if (node === el) {
-    let sum = 0;
-    const max = Math.min(off, el.childNodes.length);
-    for (let i = 0; i < max; i++) sum += textLen(el.childNodes[i]);
-    return sum;
-  }
-  const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  let n;
-  let pos = 0;
-  while ((n = w.nextNode())) {
-    if (n === node) return pos + off;
-    pos += n.nodeValue.length;
-  }
-  return pos;
-}
-
-function placeCaret(el, off) {
-  if (!el) return;
-  try {
-    el.focus({ preventScroll: true });
-  } catch {
-    el.focus();
-  }
-  const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  let n;
-  let pos = 0;
-  while ((n = w.nextNode())) {
-    if (pos + n.nodeValue.length >= off) {
-      const r = document.createRange();
-      r.setStart(n, Math.min(off - pos, n.nodeValue.length));
-      r.collapse(true);
-      const s = window.getSelection();
-      s.removeAllRanges();
-      s.addRange(r);
-      return;
-    }
-    pos += n.nodeValue.length;
-  }
-  const target = el.lastElementChild || el;
-  const r = document.createRange();
-  r.selectNodeContents(target);
-  r.collapse(false);
-  const s = window.getSelection();
-  s.removeAllRanges();
-  s.addRange(r);
-}
-
-function paginate(html, indentLeft, indentTop, forcedBefore = new Set()) {
-  const contentW = PAGE_W - indentLeft - PAD_R - 2;
-  const limit = PAGE_H - indentTop - PAD_B - 2;
-  const wrap = document.createElement("div");
-  wrap.style.cssText =
-    "position:absolute;left:-99999px;top:0;visibility:hidden;pointer-events:none;";
-  document.body.appendChild(wrap);
-  const mk = () => {
-    const p = document.createElement("div");
-    p.className = "editable-area";
-    p.style.cssText = `box-sizing:border-box;width:${contentW}px;padding:0;margin:0;min-height:0;height:auto;font-size:16px;line-height:32px;font-family:Arial,Helvetica,sans-serif;white-space:normal;`;
-    wrap.appendChild(p);
-    return p;
-  };
-  const page = mk();
-  page.innerHTML = html || "";
-  const nodes = Array.from(page.childNodes);
-  let cur = page;
-  nodes.forEach((node, idx) => {
-    if (forcedBefore.has(idx)) cur = mk();
-    cur.appendChild(node);
-    if (cur.childNodes.length > 1) {
-      const pr = cur.getBoundingClientRect();
-      const nr =
-        node.nodeType === 1
-          ? node.getBoundingClientRect()
-          : node.parentElement?.getBoundingClientRect() ||
-            cur.lastElementChild?.getBoundingClientRect() ||
-            cur.getBoundingClientRect();
-      const mb =
-        node.nodeType === 1
-          ? parseFloat(getComputedStyle(node).marginBottom) || 0
-          : 0;
-      if (nr.bottom - pr.top + mb > limit) {
-        cur.removeChild(node);
-        cur = mk();
-        cur.appendChild(node);
-      }
-    }
-  });
-  if (forcedBefore.has(nodes.length)) cur = mk();
-  const out = Array.from(wrap.children).map((p) => p.innerHTML);
-  document.body.removeChild(wrap);
-  return out.length ? out : [""];
-}
-
-function withBreaks(html, set) {
-  const t = document.createElement("div");
-  t.innerHTML = html || "";
-  const out = [];
-  Array.from(t.childNodes).forEach((n, i) => {
-    if (set.has(i)) out.push(BREAK);
-    if (n.nodeType === 1) out.push(n.outerHTML);
-    else if (n.nodeType === 3) out.push(n.nodeValue);
-  });
-  return out.join("");
-}
-
-function parseBreaks(html) {
-  const t = document.createElement("div");
-  t.innerHTML = html || "";
-  const out = [];
-  const set = new Set();
-  let pending = 0;
-  Array.from(t.childNodes).forEach((n) => {
-    if (isBreakNode(n)) {
-      pending += 1;
-      return;
-    }
-    if (pending) {
-      set.add(out.length);
-      pending = 0;
-    }
-    if (n.nodeType === 1) out.push(n.outerHTML);
-    else if (n.nodeType === 3) out.push(n.nodeValue);
-  });
-  return { html: out.join(""), breaks: set };
-}
-
-function deriveTitle(html) {
-  const s = (html || "")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(div|p|h[1-6]|li|blockquote)>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/\u00a0/g, " ")
-    .replace(/[ \t]+/g, " ")
-    .trim();
-  const line = s.split("\n").map((x) => x.trim()).find(Boolean) || "";
-  return line.length > 60 ? line.slice(0, 57).trimEnd() + "..." : line;
-}
-
-function isPlaceholderTitle(t) {
-  return !t || /^Untitled\d*$/.test(t);
-}
+/** Default capabilities for an unknown role: read-only, no comments. */
+const NO_ACCESS = { role: "none", canEdit: false, canComment: false, canShare: false };
 
 export default function Editor() {
   const { id } = useParams();
@@ -195,13 +132,9 @@ export default function Editor() {
   const [title, setTitle] = useState("Untitled");
   const [loaded, setLoaded] = useState(false);
   const [rev, setRev] = useState(0);
+  const [mode, setMode] = useState("editing");
   const [indentLeft, setIndentLeft] = useState(56);
   const [indentTop, setIndentTop] = useState(48);
-  const [mode, setMode] = useState("editing");
-  const [zoom, setZoom] = useState(100);
-  const [comments, setComments] = useState([]);
-  const [commentsOpen, setCommentsOpen] = useState(false);
-  const [pages, setPages] = useState([]);
   const [saveState, setSaveState] = useState("saved");
   const savingRef = useRef(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
@@ -209,45 +142,239 @@ export default function Editor() {
   const [tags, setTags] = useState([]);
   const [tagsOpen, setTagsOpen] = useState(false);
   const [tagsInput, setTagsInput] = useState("");
+  const [initialDoc, setInitialDoc] = useState(null);
+  // Signed-in display profile for the header account menu. Read one frame after
+  // mount so the server render and the first client render agree on `null`.
+  const [me, setMe] = useState(null);
+  const [collabUsers, setCollabUsers] = useState([]);
+
+  // --- Collaboration state ---
+  // `access` drives every permission-aware UI branch in this page.
+  const [access, setAccess] = useState(NO_ACCESS);
+  // Users without edit rights always start (and stay) in read-only mode.
+  // Deriving it during render avoids a state update inside an effect.
+  const effectiveMode = access.canEdit ? mode : "viewing";
+  const viewOnly = effectiveMode === "viewing";
+  const [threads, setThreads] = useState([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const [pendingComment, setPendingComment] = useState(null);
+  // Which thread the reader has in focus, so the panel can reveal it. Set when
+  // a highlight is clicked in the document or a thread is picked in the panel.
+  const [activeThreadId, setActiveThreadId] = useState(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+
+  // --- AI / OCR state ---
+  // The AI panel and the OCR dialog are mutually exclusive overlays: the panel
+  // is docked beside the editor, the dialog is modal.
+  const [aiOpen, setAiOpen] = useState(false);
+  const [ocrOpen, setOcrOpen] = useState(false);
+  const [googleOpen, setGoogleOpen] = useState(false);
+  // Dictation is a third overlay, docked like the AI panel so the document stays
+  // visible while the user speaks.
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  // Text currently selected in the editor, handed to the AI panel as its target.
+  const [aiSelection, setAiSelection] = useState("");
 
   const titleRef = useRef(null);
   const editorRef = useRef(null);
-  const htmlRef = useRef("");
   const dirtyRef = useRef(false);
   const loadedRef = useRef(false);
-  const pagesRef = useRef([]);
-  const elsRef = useRef({});
-  const indentLRef = useRef(56);
-  const indentTRef = useRef(48);
-  const rafRef = useRef(0);
-  const caretRef = useRef(null);
-  const forceCaretRef = useRef(null);
-  const breaksPosRef = useRef(new Set());
+  const saveNowRef = useRef(null);
+  // The mention popup is app-wide global UI owned by @tiptap/suggestion, not
+  // React state, so it lives in a lazily created module singleton.
 
-  const readCombined = useCallback(() => {
-    return pagesRef.current
-      .map((p) => elsRef.current[p.key]?.innerHTML ?? p.html)
-      .join("");
+  const [collab] = useState(() =>
+    typeof window !== "undefined"
+      ? createCollab({ docId: String(id), user: getUser() || {} })
+      : null
+  );
+  const collabUser = typeof window !== "undefined" ? collabUserInfo(getUser()) : null;
+  /** Signed-in user, needed to mark "you" in comments. */
+  const currentUser = typeof window !== "undefined" ? getUser() : null;
+
+  const editor = useEditor({
+    immediatelyRender: false,
+    extensions: buildExtensions({
+      ydoc: collab?.ydoc ?? null,
+      provider: collab?.provider ?? null,
+      user: collabUser,
+      mentionRender: getMentionRenderer(),
+    }),
+    content: "",
+    editable: !viewOnly,
+    editorProps: {
+      attributes: {
+        class: "outline-none min-h-[55vh]",
+        spellcheck: "true",
+      },
+      handleKeyDown(_view, event) {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+          event.preventDefault();
+          saveNowRef.current?.();
+          return true;
+        }
+        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+          event.preventDefault();
+          editorRef.current?.chain().focus().setPageBreak().run();
+          return true;
+        }
+        return false;
+      },
+    },
+    onUpdate({ editor: ed }) {
+      if (!loadedRef.current) return;
+      dirtyRef.current = true;
+      editorRef.current = ed;
+      setRev((r) => r + 1);
+    },
+    onSelectionUpdate({ editor: ed }) {
+      handleSelectionUpdate({ editor: ed });
+    },
+  });
+
+  // Profile for the header account menu: localStorage is not readable during
+  // the server render, so this settles a frame after mount.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setMe(getUser()));
+    return () => cancelAnimationFrame(raf);
   }, []);
 
+  useEffect(() => {
+    editorRef.current = editor;
+  }, [editor]);
+
+  useEffect(() => {
+    loadedRef.current = loaded;
+  }, [loaded]);
+
+  // Keep the editor editable in sync with the access role and the view/edit
+  // toggle. This is a side effect on the editor instance, not React state.
+  useEffect(() => {
+    editorRef.current?.setEditable(!viewOnly);
+  }, [viewOnly]);
+
+  useEffect(() => {
+    if (!collab) return;
+    reviveCollab(String(id));
+    const offUsers = subscribeCollabUsers(collab, setCollabUsers);
+    // The header no longer shows a connection badge, but the status hook still
+    // has to be attached: it wires the provider's reconnect handling.
+    const offStatus = subscribeCollabStatus(collab, () => {});
+    return () => {
+      offUsers();
+      offStatus();
+      destroyCollab(String(id));
+    };
+  }, [id, collab]);
+
+  useEffect(() => {
+    if (!editor || !loaded || !initialDoc || !collab) return;
+    if (collab.seeded) return;
+
+    const trySeed = () => {
+      if (collab.seeded) return;
+      if (seedCollab(collab, editor, initialDoc)) {
+        dirtyRef.current = true;
+        setRev((r) => r + 1);
+      }
+    };
+
+    if (collab.provider) {
+      let fallback;
+      const offSync = onCollabSync(collab, (synced) => {
+        if (synced) {
+          offSync();
+          clearTimeout(fallback);
+          trySeed();
+        }
+      });
+      fallback = setTimeout(trySeed, 2500);
+      return () => {
+        offSync();
+        clearTimeout(fallback);
+      };
+    }
+    trySeed();
+    return undefined;
+  }, [editor, loaded, initialDoc, rev, collab]);
+
+  const loadDoc = useCallback(async () => {
+    let doc;
+    try {
+      doc = await getDoc(id);
+    } catch (err) {
+      // The session cookie is HttpOnly, so the API's 401 is the only signal that
+      // it has expired. Recovering a refresh is the client's job; by the time a
+      // 401 reaches here the retry already failed, so the user has to sign in.
+      if (err.status === 401) {
+        clearSession();
+        router.replace("/login");
+        return;
+      }
+      throw err;
+    }
+    setTags(doc.tags || []);
+    // The API returns the caller's role, which is the single source of truth
+    // for what the UI is allowed to offer.
+    setAccess(doc.access || NO_ACCESS);
+    const initial = isPlaceholderTitle(doc.title)
+      ? deriveTitle(doc.plainText || doc.content || "") || doc.title || "Untitled"
+      : doc.title;
+    titleRef.current = initial;
+    setTitle(initial);
+    setInitialDoc(doc);
+    setLoaded(true);
+  }, [id, router]);
+
+  // Comments live outside the Yjs document, so they are fetched separately and
+  // refreshed whenever the panel is opened.
+  const loadComments = useCallback(async () => {
+    if (!access.canComment && access.role === "none") return;
+    setCommentsLoading(true);
+    try {
+      setThreads(await getComments(id));
+    } catch (err) {
+      console.error(err);
+      toast.error(err.message || "Could not load comments");
+    } finally {
+      setCommentsLoading(false);
+    }
+  }, [id, access.canComment, access.role]);
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      loadDoc().catch((err) => {
+        console.error(err);
+        toast.error(err.message || "Could not load document");
+        setLoaded(true);
+      });
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
   const resolveTitle = useCallback(() => {
-    if (isPlaceholderTitle(title)) {
-      const derived = deriveTitle(readCombined());
+    if (isPlaceholderTitle(titleRef.current)) {
+      const derived = editor ? deriveTitle(editor.getText()) : "";
       if (derived) {
+        titleRef.current = derived;
         setTitle(derived);
         return derived;
       }
     }
-    return title;
-  }, [title, readCombined]);
+    return titleRef.current;
+  }, [editor]);
 
   const doSave = useCallback(async () => {
-    if (savingRef.current) return;
+    if (savingRef.current || !editor) return;
     savingRef.current = true;
     setSaveState("saving");
     const payload = {
       title: resolveTitle(),
-      content: withBreaks(readCombined(), breaksPosRef.current),
+      content: editor.getHTML(),
+      contentJson: editor.getJSON(),
     };
     try {
       await saveDoc(id, payload);
@@ -259,185 +386,28 @@ export default function Editor() {
     } finally {
       savingRef.current = false;
     }
-  }, [id, readCombined, resolveTitle]);
+  }, [id, editor, resolveTitle]);
 
-  function captureCaret() {
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount) return null;
-    const r = sel.getRangeAt(0);
-    let total = 0;
-    for (const p of pagesRef.current) {
-      const el = elsRef.current[p.key];
-      if (!el) continue;
-      if (el === r.startContainer || el.contains(r.startContainer)) {
-        return total + offsetIn(el, r.startContainer, r.startOffset);
-      }
-      total += textLen(el);
-    }
-    return null;
-  }
+  const saveNow = useCallback(() => {
+    doSave();
+  }, [doSave]);
 
-  function caretPageIdx() {
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount) return -1;
-    const node = sel.getRangeAt(0).startContainer;
-    return pagesRef.current.findIndex((p) => {
-      const el = elsRef.current[p.key];
-      return el && (el === node || el.contains(node));
-    });
-  }
+  useEffect(() => {
+    saveNowRef.current = saveNow;
+  }, [saveNow]);
 
-  function caretNodeIndex() {
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount) return -1;
-    const node = sel.getRangeAt(0).startContainer;
-    let total = 0;
-    for (const p of pagesRef.current) {
-      const el = elsRef.current[p.key];
-      if (!el) continue;
-      const cnt = el.childNodes.length;
-      if (el === node || el.contains(node)) {
-        if (el === node) return total + cnt;
-        let c = node.nodeType === 3 ? node.parentNode : node;
-        while (c && c.parentNode && c.parentNode !== el) c = c.parentNode;
-        let k = -1;
-        if (c && c.parentNode === el) {
-          k = Array.prototype.indexOf.call(el.childNodes, c);
-        } else if (node.nodeType === 3 && node.parentNode === el) {
-          k = Array.prototype.indexOf.call(el.childNodes, node);
-        }
-        if (k < 0) k = cnt - 1;
-        if (k < 0) return total;
-        return total + k + 1;
-      }
-      total += cnt;
-    }
-    return -1;
-  }
-
-  function repaginateNow() {
-    if (!loadedRef.current) return;
-    const combined = readCombined();
-    const out = paginate(
-      combined,
-      indentLRef.current,
-      indentTRef.current,
-      breaksPosRef.current
-    );
-    const cur = pagesRef.current;
-    const els = cur.map((p) => elsRef.current[p.key]);
-    const same =
-      out.length === cur.length &&
-      out.every((h, i) => els[i] && els[i].innerHTML === h);
-    if (same) return;
-    const caret =
-      forceCaretRef.current != null
-        ? { page: forceCaretRef.current }
-        : captureCaret();
-    forceCaretRef.current = null;
-    const keys = cur.map((p) => p.key);
-    while (keys.length < out.length) keys.push(genKey());
-    const next = out.map((html, i) => ({ key: keys[i], html }));
-    htmlRef.current = out.join("");
-    dirtyRef.current = true;
-    caretRef.current = caret;
-    pagesRef.current = next;
-    setRev((r) => r + 1);
-    setPages(next);
-  }
-
-  function scheduleRepaginate() {
-    cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => repaginateNow());
-  }
-
-  const syncFromEditor = useCallback(() => {
-    htmlRef.current = readCombined();
-    dirtyRef.current = true;
-    setRev((r) => r + 1);
-    scheduleRepaginate();
-  }, [readCombined]);
-
-  useLayoutEffect(() => {
-    const t = caretRef.current;
-    if (t == null) return;
-    caretRef.current = null;
-    const els = pages
-      .map((p) => elsRef.current[p.key])
-      .filter(Boolean);
-    if (!els.length) return;
-    if (typeof t === "object" && t.page != null) {
-      placeCaret(els[Math.min(t.page, els.length - 1)], 0);
-      return;
-    }
-    let off = t;
-    for (let i = 0; i < els.length; i++) {
-      const len = textLen(els[i]);
-      if (off <= len) {
-        placeCaret(els[i], off);
-        return;
-      }
-      off -= len;
-    }
-    const last = els[els.length - 1];
-    placeCaret(last, textLen(last));
-  }, [pages]);
+  useEffect(() => {
+    if (!loaded || !dirtyRef.current) return;
+    const t = setTimeout(() => {
+      doSave();
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [rev, title, id, loaded, doSave]);
 
   async function handleNew() {
     const doc = await createDoc();
     router.push(`/editor/${doc._id}`);
   }
-
-  function saveNow() {
-    doSave();
-  }
-
-  useEffect(() => {
-    if (!getToken()) {
-      router.replace("/login");
-      return;
-    }
-  }, [router]);
-
-  useEffect(() => {
-    loadedRef.current = loaded;
-  }, [loaded]);
-
-  const loadDoc = useCallback(async () => {
-    const doc = await getDoc(id);
-    setTitle(
-      isPlaceholderTitle(doc.title)
-        ? deriveTitle(doc.content ?? "") || doc.title || "Untitled"
-        : doc.title
-    );
-    setTags(doc.tags || []);
-    const { html, breaks } = parseBreaks(doc.content ?? "");
-    breaksPosRef.current = breaks;
-    const out = paginate(html, indentLRef.current, indentTRef.current, breaks);
-    htmlRef.current = out.join("");
-    const next = out.map((h) => ({ key: genKey(), html: h }));
-    pagesRef.current = next;
-    setPages(next);
-    setLoaded(true);
-    if (document.fonts && document.fonts.ready) {
-      document.fonts.ready.then(() => scheduleRepaginate());
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
-
-  useEffect(() => {
-    const raf = requestAnimationFrame(() => {
-      loadDoc().catch((err) => {
-        console.error(err);
-        const next = [{ key: genKey(), html: "" }];
-        pagesRef.current = next;
-        setPages(next);
-        setLoaded(true);
-      });
-    });
-    return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
 
   function openVersions() {
     getDocVersions(id)
@@ -464,6 +434,7 @@ export default function Editor() {
       setVersionsOpen(false);
       toast.success("Version restored");
       setSaveState("saved");
+      dirtyRef.current = false;
       await loadDoc();
     } catch (err) {
       console.error(err);
@@ -471,24 +442,30 @@ export default function Editor() {
     }
   }
 
+  const BINARY_EXPORTS = ["pdf", "docx"];
+
   async function handleExport(format) {
+    const binary = BINARY_EXPORTS.includes(format);
+    // Rendering happens on the server and is slow on a large document, so say
+    // something rather than leaving the menu looking like it did nothing.
+    const toastId = binary ? toast.loading(`Preparing ${format.toUpperCase()}...`) : null;
     try {
-      const blob = await exportDocBlob(id, format);
-      const ext = { markdown: "md", html: "html", txt: "txt" }[format] || "txt";
-      const name =
-        (title || "document").replace(/[^\w-]+/g, "_").toLowerCase() ||
-        "document";
+      const { blob, filename } = await exportDocBlob(id, format);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${name}.${ext}`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+      if (toastId) toast.success(`Exported ${filename}`);
     } catch (err) {
       console.error(err);
       toast.error(err.message || "Could not export document");
+    } finally {
+      // Dismissing the loading toast is what replaces it with the outcome.
+      if (toastId) toast.dismiss(toastId);
     }
   }
 
@@ -514,110 +491,318 @@ export default function Editor() {
     }
   }
 
-  useEffect(() => {
-    if (!loaded || !dirtyRef.current) return;
-    const t = setTimeout(() => {
-      doSave();
-    }, 1000);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rev, title, id, loaded, resolveTitle]);
+  /**
+   * Open the comments panel and, when there is a text selection, start a new
+   * thread anchored to it. The comment composer is a dialog so the text stays
+   * visible while typing the note.
+   */
+  async function addComment() {
+    if (!access.canComment) {
+      toast.error("You do not have permission to comment on this document");
+      return;
+    }
 
-  function addComment() {
-    const sel = window.getSelection()?.toString().trim();
-    const text = window.prompt(
-      sel ? "Comment on selection:" : "Comment:",
-      ""
-    );
-    if (text === null) return;
-    setComments((c) => [
-      ...c,
-      {
-        id: Date.now(),
-        sel: sel || "(no selection)",
-        text,
-        time: new Date().toLocaleString(),
-      },
-    ]);
+    const ed = editorRef.current;
+    const { from, to } = ed?.state?.selection || {};
+    const selected = ed && from !== to ? ed.state.doc.textBetween(from, to, " ") : "";
+
+    setPendingComment({
+      quotedText: selected,
+      from: selected ? from : null,
+      to: selected ? to : null,
+    });
     setCommentsOpen(true);
+    await loadComments();
   }
 
-  function handleKeyDown(e, idx) {
-    if (
-      (e.ctrlKey || e.metaKey) &&
-      e.key.toLowerCase() === "s"
-    ) {
-      e.preventDefault();
-      saveNow();
+  /**
+   * Find a text range in the document by its content.
+   *
+   * Comment anchors are stored as absolute positions, which drift as other people
+   * edit around them. Quoted text is the durable fallback, so it is what we use
+   * to re-anchor highlights and to move the selection.
+   *
+   * @param {import("@tiptap/core").Editor|null} ed
+   * @param {string} needle
+   * @returns {{from: number, to: number}|null}
+   */
+  function findTextRange(ed, needle) {
+    if (!ed || !needle) return null;
+    const target = needle.trim();
+    if (!target) return null;
+
+    // Collect the text of every text node with its document position, so the
+    // match can be scored by how much of it lines up with the quote.
+    const chunks = [];
+    let joined = "";
+    ed.state.doc.descendants((node, pos) => {
+      if (!node.isText || !node.text) return;
+      chunks.push({ pos, text: node.text, offset: joined.length });
+      joined += node.text;
+    });
+
+    if (!joined.includes(target)) return null;
+
+    // Try the shortest offsets first: a later match is a better guess than an
+    // early prefix match when the quote appears more than once.
+    const candidates = [];
+    let from = joined.indexOf(target);
+    while (from !== -1) {
+      candidates.push(from);
+      from = joined.indexOf(target, from + 1);
+    }
+
+    let best = null;
+    for (const start of candidates) {
+      const chunk = chunks.find((c) => start >= c.offset && start < c.offset + c.text.length);
+      if (!chunk) continue;
+      const local = start - chunk.offset;
+      const endLocal = Math.min(local + target.length, chunk.text.length);
+      const range = { from: chunk.pos + local, to: chunk.pos + endLocal };
+      if (!best) best = range;
+    }
+    return best;
+  }
+
+  /** Apply (or clear) the shared highlight that ties document text to a thread. */
+  function syncHighlight(thread, shouldHighlight) {
+    const ed = editorRef.current;
+    if (!ed || !thread) return;
+
+    if (!shouldHighlight) {
+      ed.commands.removeCommentHighlightById(thread.id);
       return;
     }
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-      e.preventDefault();
-      insertPageBreak();
-      return;
+
+    const range = findTextRange(ed, thread.quotedText);
+    if (range) ed.commands.setCommentHighlightInRange(thread.id, range.from, range.to);
+  }
+
+  /** Persist a new thread, highlight its anchor and refresh the panel. */
+  async function submitComment(body) {
+    if (!pendingComment) return;
+    try {
+      const created = await createComment(id, {
+        body,
+        quotedText: pendingComment.quotedText,
+        from: pendingComment.from,
+        to: pendingComment.to,
+      });
+      if (created?.id) syncHighlight({ id: created.id, quotedText: created.quotedText }, true);
+      setPendingComment(null);
+      setThreads(await getComments(id));
+      toast.success("Comment added");
+    } catch (err) {
+      console.error(err);
+      toast.error(err.message || "Could not add comment");
     }
-    if (e.key === "Backspace" && idx > 0 && !viewOnly) {
-      const sel = window.getSelection();
-      if (sel && sel.isCollapsed && sel.rangeCount && sel.anchorNode) {
-        const el = e.currentTarget;
-        if (el === sel.anchorNode || el.contains(sel.anchorNode)) {
-          if (offsetIn(el, sel.anchorNode, sel.anchorOffset) === 0) {
-            e.preventDefault();
-            let before = 0;
-            for (let i = 0; i < idx; i++) {
-              before +=
-                elsRef.current[pagesRef.current[i]?.key]?.childNodes
-                  .length ?? 0;
-            }
-            breaksPosRef.current.delete(before);
-            const prev = elsRef.current[pagesRef.current[idx - 1]?.key];
-            const first = el.firstChild;
-            if (first && prev) prev.appendChild(first);
-            htmlRef.current = readCombined();
-            dirtyRef.current = true;
-            setRev((r) => r + 1);
-            scheduleRepaginate();
-          }
+  }
+
+  async function handleReply(threadId, body) {
+    try {
+      await replyToComment(id, threadId, body);
+      setThreads(await getComments(id));
+    } catch (err) {
+      console.error(err);
+      toast.error(err.message || "Could not reply");
+    }
+  }
+
+  async function handleEditComment(commentId, body) {
+    try {
+      await editComment(id, commentId, body);
+      setThreads(await getComments(id));
+    } catch (err) {
+      console.error(err);
+      toast.error(err.message || "Could not edit comment");
+    }
+  }
+
+  async function handleResolve(thread, resolved) {
+    try {
+      await resolveComment(id, thread.id, resolved);
+      // A resolved thread stops drawing attention to its text, and reopening it
+      // puts the highlight back where the quote still lives.
+      syncHighlight(thread, !resolved);
+      setThreads(await getComments(id));
+    } catch (err) {
+      console.error(err);
+      toast.error(err.message || "Could not update thread");
+    }
+  }
+
+  async function handleDeleteComment(thread) {
+    if (!window.confirm("Delete this thread and all of its replies?")) return;
+    try {
+      await deleteComment(id, thread.id);
+      syncHighlight(thread, false);
+      setThreads(await getComments(id));
+    } catch (err) {
+      console.error(err);
+      toast.error(err.message || "Could not delete comment");
+    }
+  }
+
+  /**
+   * Focus a thread from either direction: the panel list or a document
+   * highlight. Scrolling happens on the next frame because the panel renders
+   * the focus highlight from this same state.
+   */
+  function selectThread(thread) {
+    setActiveThreadId(thread?.id || null);
+    if (!thread) return;
+    if (commentsOpen) {
+      jumpToThread(thread);
+    }
+    requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-thread-id="${thread.id}"]`)
+        ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }
+
+  /**
+   * Track the current selection so the AI panel knows whether it should act on
+   * a fragment or on the whole document. Capped so dragging across a long
+   * document cannot flood state with megabytes of text.
+   */
+  const MAX_AI_SELECTION = 4000;
+  function handleSelectionUpdate({ editor: ed }) {
+    if (!ed) return;
+    const text = ed.state.doc.textBetween(
+      ed.state.selection.from,
+      ed.state.selection.to,
+      "\n",
+      " "
+    );
+    setAiSelection(text.length > MAX_AI_SELECTION ? text.slice(0, MAX_AI_SELECTION) : text);
+  }
+
+  /**
+   * Insert AI or OCR output at the caret.
+   *
+   * A blank line between blocks becomes a real paragraph break so pasted output
+   * keeps its structure instead of collapsing into one run of text.
+   */
+  function insertAtCaret(text) {
+    if (!text || !editorRef.current) return;
+    const blocks = String(text)
+      .split(/\n{2,}/)
+      .map((block) => block.trim())
+      .filter(Boolean)
+      .map((block) => ({
+        type: "paragraph",
+        content: block.split("\n").map((line) => ({ type: "text", text: line })),
+      }));
+
+    if (!blocks.length) return;
+    editorRef.current.chain().focus().insertContent(blocks).run();
+  }
+
+  /** Replace the live selection with AI output. */
+  function replaceSelection(text) {
+    if (!text || !editorRef.current) return;
+    editorRef.current
+      .chain()
+      .focus()
+      .insertContentAt(editorRef.current.state.selection, String(text))
+      .run();
+  }
+
+  /**
+   * Apply a spoken editing command to the editor.
+   *
+   * The command arrives from the dictation pipeline and describes what should
+   * happen to the block the transcript is about to land in, so each one changes
+   * the current block before the text is inserted.
+   *
+   * @param {string} id Command id from `VOICE_COMMANDS`.
+   */
+  function applyVoiceCommand(id) {
+    const ed = editorRef.current;
+    if (!ed || !access.canEdit) return;
+
+    switch (id) {
+      case "newParagraph":
+        ed.chain().focus().splitBlock().run();
+        break;
+      case "newHeading":
+        ed.chain().focus().setNode("heading", { level: 2 }).run();
+        break;
+      case "bold":
+        ed.chain().focus().toggleMark("bold").run();
+        break;
+      case "italic":
+        ed.chain().focus().toggleMark("italic").run();
+        break;
+      case "underline":
+        ed.chain().focus().toggleMark("underline").run();
+        break;
+      case "bulletList":
+        ed.chain().focus().toggleBulletList().run();
+        break;
+      case "numberedList":
+        ed.chain().focus().toggleOrderedList().run();
+        break;
+      case "deleteSentence": {
+        // Remove the sentence before the caret, if there is one.
+        const { $from } = ed.state.selection;
+        const block = $from.parent.textContent;
+        const upToCaret = block.slice(0, $from.parentOffset);
+        const boundary = Math.max(upToCaret.lastIndexOf(". "), upToCaret.lastIndexOf(".\n"));
+        if (boundary < 0) {
+          toast.info("No earlier sentence to delete");
+          break;
         }
+        const from = $from.start() + boundary + 1;
+        ed.chain().focus().deleteRange({ from, to: $from.pos }).run();
+        break;
       }
+      case "insertPageBreak":
+        ed.chain().focus().setPageBreak().run();
+        break;
+      case "stop":
+        setVoiceOpen(false);
+        break;
+      default:
+        // Unknown command: leave the document alone rather than guessing.
+        break;
     }
   }
 
-  function insertPageBreak() {
-    if (viewOnly) return;
-    const nodeIdx = caretNodeIndex();
-    if (nodeIdx < 0) return;
-    const cIdx = caretPageIdx();
-    breaksPosRef.current.add(nodeIdx);
-    forceCaretRef.current = cIdx >= 0 ? cIdx + 1 : null;
-    htmlRef.current = readCombined();
-    dirtyRef.current = true;
-    setRev((r) => r + 1);
-    scheduleRepaginate();
+  /**
+   * Move the editor selection to a comment's anchor so the panel and the
+   * document stay in sync. Falls back to searching the quoted text when the
+   * stored positions have drifted.
+   */
+  function jumpToThread(thread) {
+    const ed = editorRef.current;
+    if (!ed) return;
+
+    const { from, to } = thread.anchor || {};
+    if (Number.isInteger(from) && Number.isInteger(to) && from >= 0 && to <= ed.state.doc.content.size) {
+      ed.chain().focus().setTextSelection({ from, to }).scrollIntoView().run();
+      return;
+    }
+
+    const range = findTextRange(ed, thread.quotedText);
+    if (range) {
+      ed.chain().focus().setTextSelection(range).scrollIntoView().run();
+      return;
+    }
+    toast.info("Could not locate the highlighted text");
   }
 
-  function setIndentLeftAll(v) {
-    indentLRef.current = v;
-    setIndentLeft(v);
-    scheduleRepaginate();
-  }
+  const insertPageBreak = useCallback(() => {
+    editorRef.current?.chain().focus().setPageBreak().run();
+  }, []);
 
-  function setIndentTopAll(v) {
-    indentTRef.current = v;
-    setIndentTop(v);
-    scheduleRepaginate();
-  }
-
-  const viewOnly = mode === "viewing";
-
-  const firstEmpty =
-    loaded &&
-    pages.length === 1 &&
-    !pages[0].html.replace(/<[^>]+>/g, "").trim();
+  // Unresolved threads drive the comments button badge.
+  const openThreads = threads.filter((t) => !t.resolved).length;
 
   return (
     <div className="flex h-dvh flex-col">
-      <div className="sticky top-0 z-30 border-b border-zinc-200 bg-white">
+      <div className="no-print sticky top-0 z-30 border-b border-zinc-200 bg-white">
         <div className="flex items-center gap-3 px-4 py-2">
           <Link
             href="/"
@@ -649,6 +834,7 @@ export default function Editor() {
             size={title.length ? title.length + 1 : 8}
             onChange={(e) => {
               setTitle(e.target.value);
+              titleRef.current = e.target.value;
               dirtyRef.current = true;
             }}
             className="h-7 w-auto min-w-[3rem] max-w-[60%] px-2 py-1 text-sm font-medium [field-sizing:content]"
@@ -666,258 +852,349 @@ export default function Editor() {
                   : "Saved"}
             </Badge>
           ) : null}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={openVersions}
-            title="Version history"
-          >
-            <History />
-            History
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={openTags}
-            title="Edit tags"
-          >
-            <Tag />
-            Tags
-            {tags.length ? (
-              <Badge variant="secondary" className="px-1.5 text-[10px]">
-                {tags.length}
-              </Badge>
+          <div className="flex items-center gap-2">
+            {collabUsers.filter((u) => !u.self).length ? (
+              <div className="no-print flex -space-x-1.5">
+                {collabUsers
+                  .filter((u) => !u.self)
+                  .map((u, i) => (
+                    <span
+                      key={`${u.email}-${u.name}-${i}`}
+                      title={u.name}
+                      className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-white text-[10px] font-semibold text-white"
+                      style={{ backgroundColor: u.color, zIndex: collabUsers.length - i }}
+                    >
+                      {initials(u.name)}
+                    </span>
+                  ))}
+              </div>
             ) : null}
-          </Button>
+          </div>
+          <div className="ml-auto flex items-center gap-1.5">
+            {/* Notifications */}
+            <NotificationBell />
+
+            {/*
+              Utility glyphs. Every document editor keeps these four as icons so
+              the share controls stay visible on a laptop, so the labels move
+              into tooltips and the open panel marks itself with `active`.
+            */}
+            <TooltipProvider delayDuration={150}>
+              <div className="flex items-center gap-0.5">
+                {/* AI assistant */}
+                <HeaderIconBtn
+                  label="AI writing assistant"
+                  active={aiOpen}
+                  onClick={() => {
+                    const next = !aiOpen;
+                    setAiOpen(next);
+                    if (next) {
+                      setCommentsOpen(false);
+                      setVoiceOpen(false);
+                    }
+                  }}
+                >
+                  <Sparkles className="size-4" />
+                </HeaderIconBtn>
+
+                {/* Dictation */}
+                <HeaderIconBtn
+                  label={
+                    access.canEdit ? "Dictate with your voice" : "Editing access required"
+                  }
+                  active={voiceOpen}
+                  disabled={!access.canEdit}
+                  onClick={() => {
+                    const next = !voiceOpen;
+                    setVoiceOpen(next);
+                    if (next) {
+                      setAiOpen(false);
+                      setCommentsOpen(false);
+                    }
+                  }}
+                >
+                  <Mic className="size-4" />
+                </HeaderIconBtn>
+
+                {/* OCR */}
+                <HeaderIconBtn
+                  label={access.canEdit ? "Extract text from an image" : "Editing access required"}
+                  disabled={!access.canEdit}
+                  onClick={() => setOcrOpen(true)}
+                >
+                  <ScanText className="size-4" />
+                </HeaderIconBtn>
+              </div>
+
+              {/* Writing tools end, reviewing begins. */}
+              <div aria-hidden className="mx-1.5 h-5 w-px bg-zinc-200" />
+
+              {/* Comments */}
+              <HeaderIconBtn
+                label={openThreads > 0 ? `Comments (${openThreads} open)` : "Comments"}
+                active={commentsOpen}
+                badge={openThreads}
+                onClick={() => {
+                  const next = !commentsOpen;
+                  setCommentsOpen(next);
+                  if (next) {
+                    setAiOpen(false);
+                    setVoiceOpen(false);
+                    loadComments();
+                  }
+                }}
+              >
+                <MessageSquare className="size-4" />
+              </HeaderIconBtn>
+            </TooltipProvider>
+
+            {/* Share */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setShareOpen(true)}
+              title={access.canShare ? "Share and manage access" : "View access"}
+            >
+              <Share2 />
+              Share
+            </Button>
+
+            {access.canShare ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={openVersions}
+                title="Version history"
+              >
+                <History />
+                History
+              </Button>
+            ) : null}
+            {access.canShare ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={openTags}
+                title="Edit tags"
+              >
+                <Tag />
+                Tags
+                {tags.length ? (
+                  <Badge variant="secondary" className="px-1.5 text-[10px]">
+                    {tags.length}
+                  </Badge>
+                ) : null}
+              </Button>
+            ) : null}
+
+            {/* Account menu sits last, at the far right, where a document
+                editor keeps it -- the collaborator stack next to the title is
+                for other people, not for you. */}
+            <div aria-hidden className="mx-1 h-5 w-px bg-zinc-200" />
+            <UserMenu user={me} />
+          </div>
         </div>
         <MenuBar
+          editor={editor}
           onNew={handleNew}
           onSave={saveNow}
           onRename={() => titleRef.current?.focus()}
           onExport={handleExport}
           onVersions={openVersions}
           onTags={openTags}
+          onSaveTemplate={() => setSaveTemplateOpen(true)}
+          onShare={() => setShareOpen(true)}
+          canShare={access.canShare}
+          canEdit={access.canEdit}
         />
         <Toolbar
-          editorRef={editorRef}
-          mode={mode}
+          editor={editor}
+          mode={effectiveMode}
           setMode={setMode}
-          zoom={zoom}
-          setZoom={setZoom}
-          onEdit={syncFromEditor}
           onAddComment={addComment}
-          onPageBreak={insertPageBreak}
+          onInsertPageBreak={insertPageBreak}
           commentsOpen={commentsOpen}
           setCommentsOpen={setCommentsOpen}
+          // Attachments are scoped to the document, so the upload buttons need
+          // its id.
+          documentId={id}
+          // Commenters and viewers can never enter edit mode.
+          canEdit={access.canEdit}
         />
       </div>
 
       {loaded ? (
-        <div className="editor-canvas relative flex-1 overflow-auto bg-[#e8eaed] px-4 py-10">
-          <div
-            className="print-hide absolute left-0 w-[18px]"
-            style={{ top: 70, height: PAGE_H }}
-          >
-            <LeftRuler
-              height={PAGE_H}
-              indentTop={indentTop}
-              onIndentTop={setIndentTopAll}
-            />
-          </div>
-          <div
-            className="editor-zoom-wrap"
-            style={{
-              transform: `scale(${zoom / 100})`,
-              transformOrigin: "top center",
-            }}
-          >
+        <div className="flex flex-1 overflow-hidden">
+          <div className="editor-canvas relative flex-1 overflow-auto bg-[#e8eaed] px-4 py-10">
+            <div className="print-hide absolute left-0 top-[120px] z-10 w-[18px]">
+              <LeftRuler
+                height={PAGE_H}
+                indentTop={indentTop}
+                onIndentTop={setIndentTop}
+              />
+            </div>
             <div className="mx-auto w-fit">
-              <div className="print-hide flex">
-                <div className="w-6 shrink-0" />
+              <div className="print-hide pb-2">
                 <TopRuler
                   width={PAGE_W}
                   indentLeft={indentLeft}
-                  onIndentLeft={setIndentLeftAll}
+                  onIndentLeft={setIndentLeft}
                 />
               </div>
-              <div className="ml-6">
-                <div className="print-area relative" style={{ width: PAGE_W }}>
-                  {pages.map((p, idx) => (
-                    <div
-                      key={p.key}
-                      ref={(el) => {
-                        if (el) {
-                          elsRef.current[p.key] = el;
-                          if (!editorRef.current) editorRef.current = el;
-                        } else {
-                          delete elsRef.current[p.key];
-                        }
-                      }}
-                      contentEditable={!viewOnly}
-                      suppressContentEditableWarning
-                      spellCheck
-                      className="print-page editable-area text-base leading-8 text-zinc-900 outline-none"
-                      style={{
-                        width: PAGE_W,
-                        height: PAGE_H,
-                        padding: `${indentTop}px ${PAD_R}px ${PAD_B}px ${indentLeft}px`,
-                        background: "#fff",
-                        border: "1px solid #e4e4e7",
-                        boxShadow: "0 1px 4px rgba(0,0,0,0.12)",
-                        marginBottom: GAP,
-                        overflow: "hidden",
-                      }}
-                      dangerouslySetInnerHTML={{ __html: p.html }}
-                      onFocus={(e) => {
-                        editorRef.current = e.currentTarget;
-                      }}
-                      onInput={(e) => {
-                        if (e.nativeEvent && e.nativeEvent.isComposing) return;
-                        htmlRef.current = readCombined();
-                        dirtyRef.current = true;
-                        setRev((r) => r + 1);
-                        scheduleRepaginate();
-                      }}
-                      onKeyDown={(e) => handleKeyDown(e, idx)}
-                    />
-                  ))}
-                  {firstEmpty ? (
-                    <div
-                      aria-hidden
-                      className="print-hide pointer-events-none absolute text-base leading-8 text-zinc-400"
-                      style={{ top: indentTop, left: indentLeft }}
-                    >
-                      
-                    </div>
-                  ) : null}
-                </div>
+              <div
+                className="paper relative w-[794px] border border-zinc-200 bg-white shadow-sm"
+                style={{
+                  paddingTop: indentTop,
+                  paddingRight: PAD_R,
+                  paddingBottom: PAD_B,
+                  paddingLeft: indentLeft,
+                  minHeight: PAGE_H,
+                }}
+              >
+                <EditorContent
+                  editor={editor}
+                  className="tx-content"
+                  // Clicking highlighted text opens its thread in the panel.
+                  onClick={(event) => {
+                    const mark = event.target.closest?.("mark[data-comment]");
+                    if (!mark) return;
+                    const threadId = mark.getAttribute("data-comment");
+                    const thread = threads.find((t) => t.id === threadId);
+                    if (!thread) return;
+                    setCommentsOpen(true);
+                    selectThread(thread);
+                  }}
+                />
               </div>
             </div>
+
+            {/* Version history */}
+            {versionsOpen ? (
+              <Dialog open={versionsOpen} onOpenChange={setVersionsOpen}>
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>Version history</DialogTitle>
+                    <DialogDescription>
+                      Restore any earlier version of this document.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="max-h-96 space-y-2 overflow-y-auto">
+                    {versions.length === 0 ? (
+                      <p className="py-4 text-sm text-zinc-500">No versions yet.</p>
+                    ) : (
+                      versions.map((v) => (
+                        <div
+                          key={v._id}
+                          className="flex items-start justify-between gap-3 rounded-md border border-zinc-200 p-3"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold text-zinc-800">
+                              v{v.version}
+                            </div>
+                            <div className="mt-0.5 truncate text-xs text-zinc-500">
+                              {v.title || "Untitled"}
+                            </div>
+                            <div className="text-[10px] text-zinc-400">
+                              {new Date(v.updatedAt).toLocaleString()}
+                            </div>
+                          </div>
+                          <Button variant="outline" size="sm" onClick={() => handleRestore(v)}>
+                            Restore
+                          </Button>
+                        </div>
+                      ))
+      )}
+
+                  </div>
+                </DialogContent>
+              </Dialog>
+            ) : null}
+
+            {/* Tags */}
+            {tagsOpen ? (
+              <Dialog open={tagsOpen} onOpenChange={setTagsOpen}>
+                <DialogContent className="sm:max-w-sm">
+                  <DialogHeader>
+                    <DialogTitle>Tags</DialogTitle>
+                    <DialogDescription>
+                      Comma-separated tags to organize this document.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <Input
+                    value={tagsInput}
+                    onChange={(e) => setTagsInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") saveTags();
+                    }}
+                    placeholder="project, notes"
+                  />
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setTagsOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button onClick={saveTags}>Save</Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            ) : null}
           </div>
 
-          {commentsOpen && comments.length > 0 ? (
-            <div className="absolute right-4 top-4 w-72 rounded-lg border border-zinc-200 bg-white shadow-lg">
-              <div className="flex items-center justify-between border-b border-zinc-200 px-3 py-2">
-                <span className="text-sm font-semibold text-zinc-700">
-                  Comments ({comments.length})
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setCommentsOpen(false)}
-                  className="rounded px-1 text-zinc-500 hover:bg-zinc-100"
-                  title="Close"
-                >
-                  ×
-                </button>
-              </div>
-              <div className="max-h-96 overflow-y-auto p-2">
-                {comments.map((c) => (
-                  <div
-                    key={c.id}
-                    className="mb-2 rounded-md border border-zinc-100 bg-zinc-50 p-2"
-                  >
-                    <div className="mb-1 rounded bg-yellow-50 px-1.5 py-0.5 text-xs italic text-zinc-500">
-                      {c.sel.slice(0, 80)}
-                    </div>
-                    <p className="text-xs text-zinc-700">{c.text}</p>
-                    <div className="mt-1 flex items-center justify-between">
-                      <span className="text-[10px] text-zinc-400">{c.time}</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setComments((all) => all.filter((x) => x.id !== c.id))
-                        }
-                        className="text-[10px] text-zinc-400 hover:text-red-500"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+          {/* Comments side panel */}
+          {commentsOpen ? (
+            <CommentsPanel
+              key={String(id)}
+              onClose={() => setCommentsOpen(false)}
+              threads={threads}
+              loading={commentsLoading}
+              currentUserId={currentUser?.id}
+              canComment={access.canComment}
+              canDelete={access.canEdit}
+              activeId={activeThreadId}
+              onSelect={selectThread}
+              onReply={handleReply}
+              onEdit={handleEditComment}
+              onResolve={handleResolve}
+              onDelete={handleDeleteComment}
+            />
+          ) : null}
+
+          {/* AI side panel. Mounted only while open so it stops polling the
+              quota endpoint the rest of the time. Docked beside the editor on
+              wide screens, and a full-screen sheet on narrow ones where a
+              docked column would squeeze the page to nothing. */}
+          {aiOpen ? (
+            <div className="fixed inset-0 z-40 bg-white md:static md:z-auto md:w-[320px] md:flex-none md:bg-transparent">
+              <AiPanel
+                documentId={String(id)}
+                selection={aiSelection}
+                canEdit={access.canEdit}
+                onInsert={insertAtCaret}
+                onReplace={replaceSelection}
+                onClose={() => setAiOpen(false)}
+              />
             </div>
           ) : null}
-          {versionsOpen ? (
-            <Dialog open={versionsOpen} onOpenChange={setVersionsOpen}>
-              <DialogContent className="sm:max-w-md">
-                <DialogHeader>
-                  <DialogTitle>Version history</DialogTitle>
-                  <DialogDescription>
-                    Restore any earlier version of this document.
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="max-h-96 space-y-2 overflow-y-auto">
-                  {versions.length === 0 ? (
-                    <p className="py-4 text-sm text-zinc-500">
-                      No versions yet.
-                    </p>
-                  ) : (
-                    versions.map((v) => (
-                      <div
-                        key={v._id}
-                        className="flex items-start justify-between gap-3 rounded-md border border-zinc-200 p-3"
-                      >
-                        <div className="min-w-0">
-                          <div className="text-sm font-semibold text-zinc-800">
-                            v{v.version}
-                          </div>
-                          <div className="mt-0.5 truncate text-xs text-zinc-500">
-                            {v.title || "Untitled"}
-                          </div>
-                          <div className="text-[10px] text-zinc-400">
-                            {new Date(v.updatedAt).toLocaleString()}
-                          </div>
-                        </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleRestore(v)}
-                        >
-                          Restore
-                        </Button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </DialogContent>
-            </Dialog>
-          ) : null}
-          {tagsOpen ? (
-            <Dialog open={tagsOpen} onOpenChange={setTagsOpen}>
-              <DialogContent className="sm:max-w-sm">
-                <DialogHeader>
-                  <DialogTitle>Tags</DialogTitle>
-                  <DialogDescription>
-                    Comma-separated tags to organize this document.
-                  </DialogDescription>
-                </DialogHeader>
-                <Input
-                  value={tagsInput}
-                  onChange={(e) => setTagsInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") saveTags();
-                  }}
-                  placeholder="project, notes"
-                />
-                <DialogFooter>
-                  <Button
-                    variant="outline"
-                    onClick={() => setTagsOpen(false)}
-                  >
-                    Cancel
-                  </Button>
-                  <Button onClick={saveTags}>Save</Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
+
+          {/* Dictation side panel. Same docking as the AI panel, and mounted only
+              while open so the microphone is never held in the background. */}
+          {voiceOpen ? (
+            <div className="fixed inset-0 z-40 bg-white md:static md:z-auto md:w-[320px] md:flex-none md:bg-transparent">
+              <VoicePanel
+                documentId={String(id)}
+                canEdit={access.canEdit}
+                onInsert={insertAtCaret}
+                onCommand={applyVoiceCommand}
+                onClose={() => setVoiceOpen(false)}
+              />
+            </div>
           ) : null}
         </div>
-      ) : (
-        <div className="editor-canvas flex flex-1 flex-col items-center overflow-auto bg-[#e8eaed] px-4 py-10">
-          <div className="mx-auto w-fit">
-            <Skeleton className="h-9 w-[808px] max-w-full rounded-sm bg-white/70" />
+      ) : (        <div className="editor-canvas flex flex-1 flex-col items-center overflow-auto bg-[#e8eaed] px-4 py-10">
+          <div className="mx-auto w-full max-w-[840px]">
+            <Skeleton className="h-9 w-full rounded-sm bg-white/70" />
             <div className="flex flex-col items-center rounded-lg border border-zinc-200 bg-white p-10 shadow-sm">
               <Skeleton className="w-64 max-w-full" />
               <Skeleton className="mt-2 w-40 max-w-full" />
@@ -929,13 +1206,205 @@ export default function Editor() {
                 <Skeleton className="h-4 w-5/6" />
               </div>
             </div>
-            <div className="mt-4 flex items-center justify-center gap-2 text-sm text-zinc-400">
-              <Loader2 className="size-4 animate-spin" />
-              Loading document...
-            </div>
+          <div className="mt-4 flex items-center justify-center gap-2 text-sm text-zinc-400">
+            <Loader2 className="size-4 animate-spin" />
+            Loading document...
+          </div>
           </div>
         </div>
       )}
+
+      {/* Mobile action bar (master plan section 42).
+          The header row of glyphs does not fit a phone, so voice, AI, OCR and
+          comments get a thumb-reachable bar instead. It lives at the root level
+          of the column layout -- nesting it in a dialog kept it from ever
+          reaching the screen. */}
+      {loaded ? (
+        <div className="print-hide flex items-center justify-around gap-1 border-t border-zinc-200 bg-white px-2 py-1.5 md:hidden">
+          <Button
+            type="button"
+            variant={voiceOpen ? "secondary" : "ghost"}
+            size="sm"
+            disabled={!access.canEdit}
+            onClick={() => {
+              setVoiceOpen((v) => !v);
+              setAiOpen(false);
+              setCommentsOpen(false);
+            }}
+            title={access.canEdit ? "Dictate" : "Editing access required"}
+          >
+            <Mic className="size-4" />
+            Voice
+          </Button>
+          <Button
+            type="button"
+            variant={aiOpen ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => {
+              setAiOpen((v) => !v);
+              setVoiceOpen(false);
+              setCommentsOpen(false);
+            }}
+            title="AI writing assistant"
+          >
+            <Sparkles className="size-4" />
+            AI
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={!access.canEdit}
+            onClick={() => setOcrOpen(true)}
+            title={access.canEdit ? "Extract text from an image" : "Editing access required"}
+          >
+            <ScanText className="size-4" />
+            OCR
+          </Button>
+          <IntegrationCenterButton onClick={() => setGoogleOpen(true)} />
+          <Button
+            type="button"
+            variant={commentsOpen ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => {
+              setCommentsOpen((v) => !v);
+              setAiOpen(false);
+              setVoiceOpen(false);
+              if (!commentsOpen) loadComments();
+            }}
+            title="Comments"
+          >
+            Comments
+            {openThreads > 0 ? (
+              <Badge variant="secondary" className="ml-1 text-[10px]">
+                {openThreads}
+              </Badge>
+            ) : null}
+          </Button>
+        </div>
+      ) : null}
+
+      {/* Share dialog */}
+      <ShareDialog
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+        docId={String(id)}
+        docTitle={title}
+        isOwner={access.canShare}
+      />
+
+      {/* Save the current body as a reusable workspace template */}
+      <SaveTemplateDialog
+        open={saveTemplateOpen}
+        onOpenChange={setSaveTemplateOpen}
+        docId={String(id)}
+        docTitle={title}
+        workspaceId={initialDoc?.workspace}
+      />
+
+      {/* Image to text (OCR) */}
+      {ocrOpen ? (
+        <OcrDialog
+          documentId={String(id)}
+          canEdit={access.canEdit}
+          onInsert={insertAtCaret}
+          onClose={() => setOcrOpen(false)}
+        />
+      ) : null}
+
+      {/* Google Drive / Docs import and export (master plan sections 29-31) */}
+      {googleOpen ? (
+        <IntegrationCenter
+          open={googleOpen}
+          document={editor}
+          onClose={() => setGoogleOpen(false)}
+          onImported={(data) => {
+            // The converter returns Tiptap JSON, so the import replaces the
+            // document body outright. That is a real edit, so it goes through
+            // the same revision-saving path as any other change.
+            editor?.commands.setContent(data.content);
+            if (data.title) setTitle(data.title);
+            setRev((r) => r + 1);
+          }}
+        />
+      ) : null}
+
+      {/* New comment composer. The key remounts the dialog for each new thread
+          so the draft always starts empty without a reset effect. */}
+      <CommentComposer
+        key={pendingComment ? `${pendingComment.from}-${pendingComment.quotedText}` : "closed"}
+        pending={pendingComment}
+        onClose={() => setPendingComment(null)}
+        onSubmit={submitComment}
+      />
     </div>
+  );
+}
+
+/**
+ * Dialog for writing a new comment thread.
+ *
+ * Rendered at the page level (not inside the panel) so it can overlay the
+ * document without being clipped by the panel's scroll container.
+ */
+function CommentComposer({ pending, onClose, onSubmit }) {
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    const value = body.trim();
+    if (!value || busy) return;
+    setBusy(true);
+    try {
+      await onSubmit(value);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={Boolean(pending)} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>New comment</DialogTitle>
+          <DialogDescription>
+            {pending?.quotedText
+              ? "Commenting on the selected text."
+              : "Comment on the whole document. Use @ to mention someone."}
+          </DialogDescription>
+        </DialogHeader>
+
+        {pending?.quotedText ? (
+          <blockquote className="line-clamp-3 border-l-2 border-amber-300 bg-amber-50/60 py-1 pl-2 text-xs italic text-zinc-600">
+            {pending.quotedText}
+          </blockquote>
+        ) : null}
+
+        <textarea
+          autoFocus
+          rows={4}
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          placeholder="Write a comment... (@name to mention)"
+          className="w-full resize-none rounded-md border border-input bg-transparent p-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        />
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={busy || !body.trim()}>
+            {busy ? <Loader2 className="animate-spin" /> : null}
+            Comment
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

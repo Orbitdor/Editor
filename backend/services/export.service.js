@@ -1,4 +1,8 @@
 import { htmlToPlainText } from "../utils/text.js";
+import { htmlToBlocks, loadImage, renderDocx, renderPdf } from "./export.office.js";
+
+// `htmlToMarkdown` is exported by its own declaration further down.
+export { htmlToBlocks };
 
 function decode(str) {
   return String(str)
@@ -79,7 +83,57 @@ export const buildExport = (doc, format) => {
     case "txt":
       return { content: doc.plainText || htmlToPlainText(doc.content), ext: "txt", type: "text/plain; charset=utf-8" };
     case "html":
+      return { content: doc.content, ext: "html", type: "text/html; charset=utf-8" };
     default:
       return { content: doc.content, ext: "html", type: "text/html; charset=utf-8" };
   }
 };
+
+/**
+ * Export to a real office format (master plan section 28: PDF and DOCX).
+ *
+ * Separate from `buildExport` because these are binary and asynchronous, and
+ * because images have to be read out of storage before the bytes are embedded --
+ * the renderer itself never does IO.
+ *
+ * @param {object} doc          the document record
+ * @param {'pdf'|'docx'} format
+ * @param {object} [options]
+ * @param {(attachmentId: string) => Promise<string|null>} [options.resolveStorageKey]
+ *        maps an attachment id to its storage key, so an image can be embedded
+ */
+export async function buildBinaryExport(doc, format, options = {}) {
+  const blocks = htmlToBlocks(doc.content);
+  const { resolveStorageKey = null } = options;
+
+  // Embed our own stored images; leave third-party URLs as captions.
+  for (const block of blocks) {
+    if (block.type !== "image") continue;
+    const bytes = await loadImage(block.attachmentId, resolveStorageKey).catch(() => null);
+    if (bytes) {
+      block.buffer = bytes;
+      // Word infers the format from the declared type, and the content URL says
+      // what the stored file actually is.
+      if (!block.mime && /\.(png|jpe?g|gif|bmp|webp)(\?|$)/i.test(block.src || "")) {
+        const guess = (block.src.match(/\.([a-z0-9]+)/i) || [])[1];
+        block.mime = `image/${guess.toLowerCase() === "jpg" ? "jpeg" : guess.toLowerCase()}`;
+      }
+    }
+  }
+
+  const title = doc.title || "Document";
+
+  if (format === "docx") {
+    const content = await renderDocx(blocks, { title });
+    return {
+      content,
+      ext: "docx",
+      // The OOXML content type, not a generic binary type: Word refuses to open
+      // a .docx served as application/octet-stream in some configurations.
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    };
+  }
+
+  const content = await renderPdf(blocks, { title });
+  return { content, ext: "pdf", type: "application/pdf" };
+}

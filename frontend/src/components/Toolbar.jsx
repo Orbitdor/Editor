@@ -1,646 +1,660 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import {
   Undo2,
   Redo2,
   Printer,
-  Search,
-  SpellCheck,
-  Paintbrush,
-  Link2,
-  MessageSquarePlus,
-  Image,
+  Bold,
+  Italic,
+  Underline,
+  Strikethrough,
+  Palette,
+  Highlighter,
   AlignLeft,
   AlignCenter,
   AlignRight,
   AlignJustify,
-  ListChecks,
   List,
   ListOrdered,
-  MoreHorizontal,
-  MoveVertical,
+  ListChecks,
+  Code,
+  Link2,
+  Paperclip,
+  Image as ImageIcon,
+  Table as TableIcon,
+  MessageSquarePlus,
+  SeparatorHorizontal,
+  Eraser,
   ChevronDown,
   Check,
-  Pencil,
-  TextCursorInput,
   Eye,
-  SeparatorHorizontal,
+  Pencil,
+  Pilcrow,
+  Type,
+  TextQuote,
+  MoreHorizontal,
+  MoveVertical,
+  RemoveFormatting,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
+import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
+import { FONT_FAMILIES, FONT_SIZES, LINE_HEIGHTS, COLORS } from "@/lib/tiptap";
+import {
+  attachmentContentUrl,
+  uploadAttachment,
+  uploadAttachmentImage,
+} from "@/lib/api";
+import { toast } from "sonner";
 
-const FONTS = [
-  "Arial",
-  "Calibri",
-  "Times New Roman",
-  "Georgia",
-  "Verdana",
-  "Courier New",
-  "Tahoma",
-  "Trebuchet MS",
-  "Comic Sans MS",
+const BLOCK_TYPES = [
+  ["p", "Paragraph", <Pilcrow key="p" className="size-4" />],
+  ["h1", "Heading 1", <Type key="h1" className="size-4" />],
+  ["h2", "Heading 2", <Type key="h2" className="size-4" />],
+  ["h3", "Heading 3", <Type key="h3" className="size-4" />],
+  ["h4", "Heading 4", <Type key="h4" className="size-4" />],
+  ["h5", "Heading 5", <Type key="h5" className="size-4" />],
+  ["h6", "Heading 6", <Type key="h6" className="size-4" />],
+  ["blockquote", "Blockquote", <TextQuote key="bq" className="size-4" />],
+  ["codeBlock", "Code block", <Code key="cb" className="size-4" />],
 ];
 
-const SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72];
-
-const STYLES = [
-  ["Normal text", "P"],
-  ["Title", "H1"],
-  ["Subtitle", "H2"],
-  ["Heading 1", "H3"],
-  ["Heading 2", "H4"],
-  ["Heading 3", "H5"],
+const ALIGNMENTS = [
+  ["left", "Align left", <AlignLeft key="al" className="size-4" />],
+  ["center", "Align center", <AlignCenter key="ac" className="size-4" />],
+  ["right", "Align right", <AlignRight key="ar" className="size-4" />],
+  ["justify", "Justify", <AlignJustify key="aj" className="size-4" />],
 ];
 
-const SPACINGS = ["1", "1.15", "1.5", "1.75", "2", "2.5", "3"];
-
-const ZOOMS = [50, 75, 90, 100, 110, 125, 150, 200];
-
-const MODES = [
-  ["editing", "Editing"],
-  ["suggesting", "Suggesting"],
-  ["viewing", "Viewing"],
-];
-
-const ICONS = {
-  undo: <Undo2 className="h-4 w-4" />,
-  redo: <Redo2 className="h-4 w-4" />,
-  print: <Printer className="h-4 w-4" />,
-  search: <Search className="h-4 w-4" />,
-  spell: <SpellCheck className="h-4 w-4" />,
-  brush: <Paintbrush className="h-4 w-4" />,
-  link: <Link2 className="h-4 w-4" />,
-  comment: <MessageSquarePlus className="h-4 w-4" />,
-  image: <Image className="h-4 w-4" />,
-  alignLeft: <AlignLeft className="h-4 w-4" />,
-  alignCenter: <AlignCenter className="h-4 w-4" />,
-  alignRight: <AlignRight className="h-4 w-4" />,
-  alignJustify: <AlignJustify className="h-4 w-4" />,
-  spacing: <MoveVertical className="h-4 w-4" />,
-  checklist: <ListChecks className="h-4 w-4" />,
-  bullet: <List className="h-4 w-4" />,
-  number: <ListOrdered className="h-4 w-4" />,
-  more: <MoreHorizontal className="h-4 w-4" />,
-  pageBreak: <SeparatorHorizontal className="h-4 w-4" />,
-};
-
-function Select({
-  value,
-  onChange,
-  options,
-  className = "",
-  title,
-  emptyLabel,
-}) {
+function IconBtn({ title, active, disabled, onClick, children }) {
   return (
-    <select
-      value={value ?? ""}
-      onChange={(e) => onChange && onChange(e.target.value)}
-      title={title}
-      className={`h-8 cursor-pointer rounded-md border border-zinc-300 bg-white px-1.5 text-xs text-zinc-800 outline-none focus:border-blue-400 ${className}`}
-    >
-      {emptyLabel ? <option value="">{emptyLabel}</option> : null}
-      {options.map((o) => {
-        const val = Array.isArray(o) ? o[0] : o;
-        const label = Array.isArray(o) ? o[1] : o;
-        return (
-          <option key={val} value={val}>
-            {label}
-          </option>
-        );
-      })}
-    </select>
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={title}
+          data-active={active ? "true" : "false"}
+          disabled={disabled}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onClick={(e) => {
+            e.preventDefault();
+            onClick?.();
+          }}
+          className={cn(
+            "h-8 w-8 px-0",
+            active && "bg-accent text-accent-foreground"
+          )}
+        >
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{title}</TooltipContent>
+    </Tooltip>
   );
 }
 
-function Btn({
-  onClick,
-  onMouseDown,
-  active,
+function SelectMenu({
   title,
-  children,
+  trigger,
+  label,
   disabled,
-  className = "",
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      disabled={disabled}
-      onMouseDown={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onMouseDown && onMouseDown(e);
-      }}
-      onClick={(e) => {
-        e.preventDefault();
-        onClick && onClick(e);
-      }}
-      className={`flex h-8 min-w-8 cursor-pointer items-center justify-center rounded-md px-1.5 text-zinc-700 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 ${
-        active ? "bg-blue-100 text-blue-700 ring-1 ring-blue-300" : ""
-      } ${className}`}
-    >
-      {children}
-    </button>
-  );
-}
-
-const Divider = () => <div className="mx-1 h-6 w-px shrink-0 bg-zinc-200" />;
-
-const MODE_ICONS = {
-  editing: <Pencil className="h-4 w-4" />,
-  suggesting: <TextCursorInput className="h-4 w-4" />,
-  viewing: <Eye className="h-4 w-4" />,
-};
-
-function IconDropdown({
-  title,
-  currentIcon,
   items,
   value,
   onSelect,
-  disabled,
-  align = "left",
+  width = "w-44",
 }) {
-  const [open, setOpen] = useState(false);
   return (
-    <div className="relative">
-      <button
-        type="button"
-        title={title}
-        disabled={disabled}
-        onMouseDown={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-        }}
-        onClick={() => setOpen((v) => !v)}
-        className="flex h-8 cursor-pointer items-center gap-0.5 rounded-md px-1.5 text-zinc-700 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        {currentIcon}
-        <ChevronDown className="h-3 w-3 text-zinc-400" />
-      </button>
-      {open ? (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div
-            className={`absolute top-full z-20 mt-1 min-w-44 rounded-lg border border-zinc-200 bg-white py-1 shadow-lg ${
-              align === "right" ? "right-0" : "left-0"
-            }`}
+    <DropdownMenu>
+      <Tooltip delayDuration={150}>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={disabled}
+              onMouseDown={(e) => e.preventDefault()}
+              className="h-8 gap-1 data-[state=open]:bg-accent"
+            >
+              {trigger}
+              <ChevronDown className="size-3.5 text-muted-foreground" />
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{title}</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="start" className={cn(width, "max-h-80 overflow-auto")}>
+        {label ? <DropdownMenuLabel className="text-xs">{label}</DropdownMenuLabel> : null}
+        {items.map(([val, itemLabel, icon], i) => (
+          <DropdownMenuItem
+            key={String(val)}
+            onSelect={() => onSelect?.(val)}
+            className="gap-2"
           >
-            {items.map(([val, label, ic]) => (
-              <button
-                key={val}
-                type="button"
-                title={label}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-                onClick={() => {
-                  onSelect && onSelect(val);
-                  setOpen(false);
-                }}
-                className={`flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-zinc-100 ${
-                  value === val ? "text-blue-700" : "text-zinc-700"
-                }`}
-              >
-                <span className="text-zinc-600">{ic}</span>
-                <span className="font-medium">{label}</span>
-                {value === val ? (
-                  <Check className="ml-auto h-3.5 w-3.5 text-blue-600" />
-                ) : null}
-              </button>
-            ))}
-          </div>
-        </>
-      ) : null}
-    </div>
+            {icon ? <span className="text-muted-foreground">{icon}</span> : null}
+            <span className="flex-1">{itemLabel}</span>
+            {value === val ? <Check className="size-3.5 text-primary" /> : null}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
+}
+
+function ColorField({ title, value, onPick, onReset, icon, active }) {
+  return (
+    <DropdownMenu>
+      <Tooltip delayDuration={150}>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={title}
+              onMouseDown={(e) => e.preventDefault()}
+              className="relative h-8 w-8 px-0 data-[state=open]:bg-accent"
+            >
+              {icon}
+              <span
+                className="absolute inset-x-1.5 bottom-1.5 h-[3px] rounded-sm"
+                style={{ background: value || "#334155" }}
+              />
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{title}</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="start" className="w-44">
+        <div className="grid grid-cols-5 gap-1 p-2">
+          {COLORS.map((c) => (
+            <button
+              key={c.name}
+              type="button"
+              title={c.name}
+              onClick={() => onPick(c.value)}
+              className={cn(
+                "size-7 cursor-pointer rounded-full border flex items-center justify-center transition-transform hover:scale-110",
+                active === c.value ? "ring-2 ring-blue-500 ring-offset-1" : ""
+              )}
+              style={{ background: c.value || "#ffffff" }}
+            >
+              {!c.value ? <span className="text-[10px] text-muted-foreground">∅</span> : null}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 border-t px-2 py-1.5">
+          <input
+            type="color"
+            defaultValue={value || "#000000"}
+            onChange={(e) => onPick(e.target.value)}
+            className="h-6 w-8 cursor-pointer rounded border border-input bg-transparent p-0"
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={onReset}
+          >
+            <RemoveFormatting className="size-3.5" />
+            Reset
+          </Button>
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function activeBlock(editor) {
+  if (!editor) return "p";
+  for (let lv = 1; lv <= 6; lv++) {
+    if (editor.isActive("heading", { level: lv })) return `h${lv}`;
+  }
+  if (editor.isActive("blockquote")) return "blockquote";
+  if (editor.isActive("codeBlock")) return "codeBlock";
+  return "p";
 }
 
 export default function Toolbar({
-  editorRef,
+  editor,
   mode,
   setMode,
-  zoom,
-  setZoom,
-  onEdit,
   onAddComment,
-  onPageBreak,
-  showComments,
+  onInsertPageBreak,
   commentsOpen,
   setCommentsOpen,
+  canEdit = true,
+  canComment = true,
+  documentId = null,
 }) {
-  const [sel, setSel] = useState({});
-  const [paintActive, setPaintActive] = useState(false);
-  const [spell, setSpell] = useState(true);
-  const [findOpen, setFindOpen] = useState(false);
-  const [findQuery, setFindQuery] = useState("");
-  const [moreOpen, setMoreOpen] = useState(false);
-  const paintRef = useRef(null);
-  const findRef = useRef(null);
+  const [, force] = useReducer((x) => x + 1, 0);
+  // Hidden pickers for the two attach paths: an image becomes an inline figure, a
+  // file becomes an attachment card. Kept in refs so the buttons can just click
+  // them, and the same input is reused after each selection.
+  const imagePicker = useRef(null);
+  const filePicker = useRef(null);
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
-    const update = () => {
-      const d = document;
-      setSel({
-        bold: d.queryCommandState("bold"),
-        italic: d.queryCommandState("italic"),
-        underline: d.queryCommandState("underline"),
-        formatBlock: String(d.queryCommandValue("formatBlock") || "P").toUpperCase().replace(/^<|>$/g, ""),
-        alignLeft: d.queryCommandState("justifyLeft"),
-        alignCenter: d.queryCommandState("justifyCenter"),
-        alignRight: d.queryCommandState("justifyRight"),
-        alignFull: d.queryCommandState("justifyFull"),
-        ol: d.queryCommandState("insertOrderedList"),
-        ul: d.queryCommandState("insertUnorderedList"),
-        fontName: d.queryCommandValue("fontName"),
-        fontSize: d.queryCommandValue("fontSize"),
-      });
+    if (!editor) return;
+    editor.on("transaction", force);
+    editor.on("selectionUpdate", force);
+    return () => {
+      editor.off("transaction", force);
+      editor.off("selectionUpdate", force);
     };
-    update();
-    document.addEventListener("selectionchange", update);
-    return () => document.removeEventListener("selectionchange", update);
-  }, []);
+  }, [editor]);
 
-  useEffect(() => {
-    if (editorRef.current) editorRef.current.spellcheck = spell;
-  }, [spell, editorRef]);
+  const viewOnly = mode === "viewing" || !canEdit;
+  const disabled = !editor || viewOnly;
 
-  useEffect(() => {
-    if (!paintActive) return;
-    const apply = () => {
-      const p = paintRef.current;
-      if (!p) return;
-      const el = editorRef.current;
-      if (el) el.focus();
-      const d = document;
-      if (p.bold) d.execCommand("bold", false);
-      if (p.italic) d.execCommand("italic", false);
-      if (p.underline) d.execCommand("underline", false);
-      if (p.color) {
-        d.execCommand("styleWithCSS", false, "true");
-        d.execCommand("foreColor", false, p.color);
+  const block = activeBlock(editor);
+  const textStyle = editor ? editor.getAttributes("textStyle") : {};
+  const highlight = editor ? editor.getAttributes("highlight") : {};
+  const fontFamily = textStyle.fontFamily || "";
+  const fontSize = textStyle.fontSize ? Number.parseInt(textStyle.fontSize, 10) || "" : "";
+  const lineHeight = textStyle.lineHeight || "";
+  const inTable = editor?.can().addRowBefore() ?? false;
+  const text = editor ? editor.getText() : "";
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+
+  const focus = () => editor?.chain().focus();
+
+  const run = (fn) => () => {
+    if (disabled) return;
+    focus()[fn]().run();
+  };
+
+  const applyBlock = (val) => {
+    if (disabled) return;
+    const c = focus();
+    if (val === "p") c.setParagraph().run();
+    else if (/^h[1-6]$/.test(val)) c.toggleHeading({ level: Number(val.slice(1)) }).run();
+    else if (val === "blockquote") c.toggleBlockquote().run();
+    else if (val === "codeBlock") c.toggleCodeBlock().run();
+  };
+
+  const blockLabel = (BLOCK_TYPES.find(([v]) => v === block)?.[1]) || "Paragraph";
+  const sizeLabel = fontSize ? `Size · ${fontSize}` : "Size";
+  const fontLabel = fontFamily || "Font";
+
+  const insertLink = () => {
+    if (disabled) return;
+    const prev = editor.getAttributes("link").href || "";
+    const url = window.prompt("Link URL:", prev);
+    if (url === null) return;
+    if (url === "") editor.chain().focus().unsetLink().run();
+    else editor.chain().focus().setLink({ href: url }).run();
+  };
+
+  const insertImage = () => {
+    if (disabled) return;
+    const url = window.prompt("Image URL:", "https://");
+    if (url) editor.chain().focus().setImage({ src: url }).run();
+  };
+
+  /**
+   * Upload a picked file and drop it into the document.
+   *
+   * The server returns an id rather than a permanent URL, so what lands in the
+   * shared Yjs document is a reference every collaborator can resolve but nobody
+   * can read without access to this document.
+   */
+  const handleUpload = async (file, kind) => {
+    if (disabled || !file || !documentId) return;
+    setUploading(true);
+    try {
+      if (kind === "image") {
+        const res = await uploadAttachmentImage(documentId, file);
+        const attachment = res.attachment;
+        editor
+          .chain()
+          .focus()
+          .setImage({ src: attachmentContentUrl(attachment._id, { inline: true }) })
+          .run();
+      } else {
+        const res = await uploadAttachment(documentId, file);
+        const attachment = res.attachment;
+        editor
+          .chain()
+          .focus()
+          .insertAttachment({
+            attachmentId: attachment._id,
+            name: attachment.name,
+            mime: attachment.mime,
+            bytes: attachment.bytes,
+          })
+          .run();
       }
-      if (p.hilite) {
-        d.execCommand("styleWithCSS", false, "true");
-        d.execCommand("hiliteColor", false, p.hilite);
-      }
-      if (p.font) d.execCommand("fontName", false, p.font);
-      onEdit && onEdit();
-      paintRef.current = null;
-      setPaintActive(false);
-    };
-    document.addEventListener("mouseup", apply);
-    return () => document.removeEventListener("mouseup", apply);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paintActive]);
-
-  const exec = (cmd, val) => {
-    const el = editorRef.current;
-    if (!el) return;
-    if (mode === "viewing") return;
-    el.focus();
-    if (cmd === "foreColor" || cmd === "hiliteColor") {
-      document.execCommand("styleWithCSS", false, "true");
+      toast.success(`${file.name} attached`);
+    } catch (err) {
+      // The server speaks in plain messages ("That file type is not supported"),
+      // which are clearer than anything invented here.
+      toast.error(err.message || "That file could not be attached");
+    } finally {
+      setUploading(false);
     }
-    document.execCommand(cmd, false, val);
-    onEdit && onEdit();
   };
 
-  const applyFontSize = (px) => {
-    const el = editorRef.current;
-    if (!el || mode === "viewing") return;
-    el.focus();
-    const prev = [...document.querySelectorAll("font[size]")];
-    document.execCommand("fontSize", false, "7");
-    const added = [
-      ...document.querySelectorAll("font[size]"),
-    ].filter((f) => !prev.includes(f));
-    added.forEach((f) => {
-      const span = document.createElement("span");
-      span.style.fontSize = `${px}pt`;
-      span.innerHTML = f.innerHTML;
-      f.replaceWith(span);
-    });
-    [...document.querySelectorAll("font[size]")].forEach((f) => f.removeAttribute("size"));
-    onEdit && onEdit();
+  const pickImage = () => {
+    if (disabled || !documentId) return;
+    imagePicker.current?.click();
   };
 
-  const applyLineSpacing = (val) => {
-    const el = editorRef.current;
-    if (!el || mode === "viewing") return;
-    el.focus();
-    const s = window.getSelection();
-    if (!s.rangeCount) return;
-    let node = s.getRangeAt(0).startContainer;
-    if (node.nodeType === 3) node = node.parentElement;
-    let block = node.closest
-      ? node.closest("p,h1,h2,h3,h4,h5,h6,li,div,blockquote")
-      : null;
-    block = block || node;
-    if (block && block.nodeType === 1) block.style.lineHeight = val;
-    onEdit && onEdit();
+  const pickFile = () => {
+    if (disabled || !documentId) return;
+    filePicker.current?.click();
   };
 
-  const togglePaint = () => {
-    if (mode === "viewing") return;
-    if (paintActive) {
-      paintRef.current = null;
-      setPaintActive(false);
-      return;
-    }
-    const d = document;
-    paintRef.current = {
-      bold: d.queryCommandState("bold") ? "bold" : "",
-      italic: d.queryCommandState("italic") ? "italic" : "",
-      underline: d.queryCommandState("underline") ? "underline" : "",
-      color: d.queryCommandValue("foreColor") || "",
-      hilite: d.queryCommandValue("hiliteColor") || "",
-      font: d.queryCommandValue("fontName") || "",
+  const setLineSpacing = (v) => {
+    if (disabled) return;
+    if (v) editor.chain().focus().setLineHeight(v).run();
+    else editor.chain().focus().unsetLineHeight().run();
+  };
+
+  const applyTable = (v) => {
+    if (disabled || !editor) return;
+    const c = editor.chain().focus();
+    const actions = {
+      insertTable: () => c.insertTable({ rows: 3, cols: 3, withHeaderRow: true }),
+      addRowBefore: () => c.addRowBefore(),
+      addRowAfter: () => c.addRowAfter(),
+      addColumnBefore: () => c.addColumnBefore(),
+      addColumnAfter: () => c.addColumnAfter(),
+      toggleHeaderRow: () => c.toggleHeaderRow(),
+      deleteRow: () => c.deleteRow(),
+      deleteColumn: () => c.deleteColumn(),
     };
-    setPaintActive(
-      !!(paintRef.current.bold || paintRef.current.italic || paintRef.current.underline || paintRef.current.color || paintRef.current.hilite || paintRef.current.font)
-    );
+    actions[v]?.();
   };
 
-  const doFind = () => {
-    if (!findQuery || mode === "viewing") return;
-    const el = editorRef.current;
-    if (el) el.focus();
-    window.find(findQuery, false, false, true);
+  const clearFormat = () => {
+    if (disabled) return;
+    editor.chain().focus().clearNodes().unsetAllMarks().run();
   };
-
-  const closeFind = () => {
-    setFindOpen(false);
-    setFindQuery("");
-  };
-
-  const insertChecklist = () => {
-    const el = editorRef.current;
-    if (!el || mode === "viewing") return;
-    el.focus();
-    const html =
-      '<div style="display:flex;align-items:center;gap:8px;margin:2px 0"><input type="checkbox" tabindex="-1" style="width:14px;height:14px;flex:none">&nbsp;</div>';
-    document.execCommand("insertHTML", false, html);
-    onEdit && onEdit();
-  };
-
-  const activeAlign =
-    (sel.alignCenter && "alignCenter") ||
-    (sel.alignRight && "alignRight") ||
-    (sel.alignFull && "alignFull") ||
-    (sel.alignLeft && "alignLeft") ||
-    "";
-
-  const selectCls = active =>
-    `h-8 rounded-md border ${
-      active ? "border-blue-400 bg-blue-50" : "border-zinc-300 bg-white"
-    } px-1.5 text-xs text-zinc-800 outline-none focus:border-blue-400`;
 
   return (
-    <div className="relative border-b border-zinc-200 bg-white">
-      <div className="flex flex-wrap items-center gap-x-0.5 gap-y-0.5 px-3 py-1.5">
-        <Btn title="Undo (Ctrl+Z)" disabled={mode === "viewing"} onClick={() => exec("undo")}>
-          {ICONS.undo}
-        </Btn>
-        <Btn title="Redo (Ctrl+Y)" disabled={mode === "viewing"} onClick={() => exec("redo")}>
-          {ICONS.redo}
-        </Btn>
-        <Btn title="Print" onClick={() => window.print()}>
-          {ICONS.print}
-        </Btn>
-        <Btn title="Search" active={findOpen} onClick={() => (findOpen ? closeFind() : setFindOpen(true))}>
-          {ICONS.search}
-        </Btn>
-        <Btn
-          title="Spelling and grammar check"
-          active={spell}
-          disabled={mode === "viewing"}
-          onClick={() => setSpell((v) => !v)}
-        >
-          {ICONS.spell}
-        </Btn>
-        <Btn title="Paint format" active={paintActive} disabled={mode === "viewing"} onClick={togglePaint}>
-          {ICONS.brush}
-        </Btn>
-        <Divider />
-        <Select
-          value={String(zoom)}
-          title="Zoom"
-          onChange={(v) => setZoom(Number(v))}
-          options={ZOOMS.map((z) => [String(z), `${z}%`])}
-          className="w-16"
-        />
-        <Divider />
+    <TooltipProvider delayDuration={150}>
+      <div className="flex flex-wrap items-center gap-0.5 border-t border-zinc-100 bg-white px-2 py-1">
+        <IconBtn title="Undo (Ctrl+Z)" disabled={disabled} onClick={run("undo")}>
+          <Undo2 className="size-4" />
+        </IconBtn>
+        <IconBtn title="Redo (Ctrl+Y)" disabled={disabled} onClick={run("redo")}>
+          <Redo2 className="size-4" />
+        </IconBtn>
+        <IconBtn title="Print" onClick={() => window.print()}>
+          <Printer className="size-4" />
+        </IconBtn>
 
-        <Select
-          value={sel.formatBlock === "P" ? "P" : sel.formatBlock}
-          title="Styles"
-          options={STYLES.map(([tag, label]) => [
-            tag,
-            label,
-          ])}
-          emptyLabel="Paragraph styles"
-          className="w-32"
-          onChange={(val) =>
-            exec("formatBlock", val === "P" ? "P" : val)
-          }
+        <Separator orientation="vertical" className="mx-1.5 h-6! bg-zinc-200" />
+
+        <SelectMenu
+          title="Paragraph styles"
+          trigger={<span className="max-w-28 truncate text-xs">{blockLabel}</span>}
+          value={block}
+          disabled={disabled}
+          onSelect={applyBlock}
+          width="w-48"
+          items={BLOCK_TYPES}
         />
-        <Select
-          value={sel.fontName || ""}
+        <SelectMenu
           title="Font"
-          options={FONTS}
-          emptyLabel="Font"
-          className="w-32"
-          onChange={(v) => exec("fontName", v)}
+          trigger={<span className="mx-0.5 text-xs">{fontLabel}</span>}
+          value={fontFamily}
+          disabled={disabled}
+          onSelect={(v) =>
+            v ? editor.chain().focus().setFontFamily(v).run() : editor.chain().focus().unsetFontFamily().run()
+          }
+          items={[["", "Default", null], ...FONT_FAMILIES.map((f) => [f, f, null])]}
         />
-        <Select
-          value={sel.fontSize || ""}
+        <SelectMenu
           title="Font size"
-          options={SIZES.map((s) => [String(s), `${s}`])}
-          emptyLabel="Size"
-          className="w-16"
-          onChange={(v) => applyFontSize(Number(v))}
+          trigger={<span className="mx-0.5 text-xs">{sizeLabel}</span>}
+          value={fontSize}
+          disabled={disabled}
+          onSelect={(v) =>
+            v ? editor.chain().focus().setFontSize(`${v}px`).run() : editor.chain().focus().unsetFontSize().run()
+          }
+          items={[["", "Default", null], ...FONT_SIZES.map((s) => [String(s), `${s}`, null])]}
         />
-        <Divider />
+        <SelectMenu
+          title="Line spacing"
+          trigger={
+            <span className="mx-0.5 inline-flex items-center gap-1 text-xs">
+              <MoveVertical className="size-3.5" />
+              Spacing
+            </span>
+          }
+          value={lineHeight}
+          disabled={disabled}
+          onSelect={setLineSpacing}
+          items={[["", "Default", null], ...LINE_HEIGHTS.map((s) => [s, `${s}x`, null])]}
+        />
 
-        <Btn title="Bold (Ctrl+B)" active={sel.bold} disabled={mode === "viewing"} onClick={() => exec("bold")}>
-          <span className="text-sm font-bold">B</span>
-        </Btn>
-        <Btn title="Italic (Ctrl+I)" active={sel.italic} disabled={mode === "viewing"} onClick={() => exec("italic")}>
-          <span className="text-sm italic">I</span>
-        </Btn>
-        <Btn title="Underline (Ctrl+U)" active={sel.underline} disabled={mode === "viewing"} onClick={() => exec("underline")}>
-          <span className="text-sm underline">U</span>
-        </Btn>
-        <input
-          type="color"
-          defaultValue="#000000"
+        <Separator orientation="vertical" className="mx-1.5 h-6! bg-zinc-200" />
+
+        <IconBtn title="Bold (Ctrl+B)" active={editor?.isActive("bold")} disabled={disabled} onClick={run("toggleBold")}>
+          <Bold className="size-4" />
+        </IconBtn>
+        <IconBtn title="Italic (Ctrl+I)" active={editor?.isActive("italic")} disabled={disabled} onClick={run("toggleItalic")}>
+          <Italic className="size-4" />
+        </IconBtn>
+        <IconBtn title="Underline (Ctrl+U)" active={editor?.isActive("underline")} disabled={disabled} onClick={run("toggleUnderline")}>
+          <Underline className="size-4" />
+        </IconBtn>
+        <IconBtn title="Strikethrough" active={editor?.isActive("strike")} disabled={disabled} onClick={run("toggleStrike")}>
+          <Strikethrough className="size-4" />
+        </IconBtn>
+        <ColorField
           title="Text color"
-          disabled={mode === "viewing"}
-          onChange={(e) => exec("foreColor", e.target.value)}
-          onMouseDown={(e) => e.stopPropagation()}
-          className="h-8 w-7 cursor-pointer rounded-md border border-zinc-300 bg-white p-0.5"
+          value={textStyle.color}
+          active={textStyle.color}
+          icon={<Palette className="size-4" />}
+          onPick={(v) => (v ? editor.chain().focus().setColor(v).run() : editor.chain().focus().unsetColor().run())}
+          onReset={() => editor.chain().focus().unsetColor().run()}
         />
-        <input
-          type="color"
-          defaultValue="#ffff00"
+        <ColorField
           title="Highlight color"
-          disabled={mode === "viewing"}
-          onChange={(e) => exec("hiliteColor", e.target.value)}
-          onMouseDown={(e) => e.stopPropagation()}
-          className="h-8 w-7 cursor-pointer rounded-md border border-zinc-300 bg-white p-0.5"
+          value={highlight.color}
+          active={highlight.color}
+          icon={<Highlighter className="size-4" />}
+          onPick={(v) => (v ? editor.chain().focus().setHighlight({ color: v }).run() : editor.chain().focus().unsetHighlight().run())}
+          onReset={() => editor.chain().focus().unsetHighlight().run()}
         />
-        <Divider />
 
-        <Btn title="Insert link" disabled={mode === "viewing"} onClick={() => {
-          const url = window.prompt("Link URL:", "https://");
-          if (url) exec("createLink", url);
-        }}>
-          {ICONS.link}
-        </Btn>
-        <Btn title="Add comment" disabled={mode === "viewing"} onClick={onAddComment}>
-          {ICONS.comment}
-        </Btn>
-        <Btn title="Insert image" disabled={mode === "viewing"} onClick={() => {
-          const url = window.prompt("Image URL:", "https://");
-          if (url) exec("insertImage", url);
-        }}>
-          {ICONS.image}
-        </Btn>
-        <Divider />
+        <Separator orientation="vertical" className="mx-1.5 h-6! bg-zinc-200" />
 
-        <IconDropdown
-          title="Align & indent"
-          currentIcon={ICONS[activeAlign] || ICONS.alignLeft}
-          value={activeAlign}
-          onSelect={(v) => {
-            const map = {
-              alignLeft: "justifyLeft",
-              alignCenter: "justifyCenter",
-              alignRight: "justifyRight",
-              alignFull: "justifyFull",
-            };
-            exec(map[v]);
-          }}
-          items={[
-            ["alignLeft", "Align left", ICONS.alignLeft],
-            ["alignCenter", "Align center", ICONS.alignCenter],
-            ["alignRight", "Align right", ICONS.alignRight],
-            ["alignFull", "Justify", ICONS.alignJustify],
-          ]}
+        <SelectMenu
+          title="Alignment"
+          trigger={<AlignLeft className="size-4" />}
+          disabled={disabled}
+          onSelect={(v) => editor.chain().focus().setTextAlign(v).run()}
+          items={ALIGNMENTS}
+          width="w-40"
         />
-        <IconDropdown
-          title="Line & paragraph spacing"
-          currentIcon={ICONS.spacing}
-          value=""
-          onSelect={(v) => applyLineSpacing(Number(v))}
-          items={SPACINGS.map((s) => [s, `${s}x`, ICONS.spacing])}
-        />
-        <Divider />
+        <IconBtn title="Bulleted list" active={editor?.isActive("bulletList")} disabled={disabled} onClick={run("toggleBulletList")}>
+          <List className="size-4" />
+        </IconBtn>
+        <IconBtn title="Numbered list" active={editor?.isActive("orderedList")} disabled={disabled} onClick={run("toggleOrderedList")}>
+          <ListOrdered className="size-4" />
+        </IconBtn>
+        <IconBtn title="Task list" active={editor?.isActive("taskList")} disabled={disabled} onClick={run("toggleTaskList")}>
+          <ListChecks className="size-4" />
+        </IconBtn>
 
-        <Btn title="Checklist" disabled={mode === "viewing"} onClick={insertChecklist}>
-          {ICONS.checklist}
-        </Btn>
-        <Btn title="Bulleted list" active={sel.ul} disabled={mode === "viewing"} onClick={() => exec("insertUnorderedList")}>
-          {ICONS.bullet}
-        </Btn>
-        <Btn title="Numbered list" active={sel.ol} disabled={mode === "viewing"} onClick={() => exec("insertOrderedList")}>
-          {ICONS.number}
-        </Btn>
-        <Divider />
+        <Separator orientation="vertical" className="mx-1.5 h-6! bg-zinc-200" />
 
-        <div className="relative">
-          <Btn title="More" active={moreOpen} onClick={() => setMoreOpen((v) => !v)}>
-            {ICONS.more}
-          </Btn>
-          {moreOpen ? (
-            <>
-              <div className="fixed inset-0 z-10" onClick={() => setMoreOpen(false)} />
-              <div className="absolute left-0 top-full z-20 mt-1 w-44 rounded-lg border border-zinc-200 bg-white py-1 shadow-lg">
-                <MenuRow onClick={() => { exec("outdent"); setMoreOpen(false); }}>
-                  Decrease indent
-                </MenuRow>
-                <MenuRow onClick={() => { exec("indent"); setMoreOpen(false); }}>
-                  Increase indent
-                </MenuRow>
-                <MenuRow onClick={() => { exec("removeFormat"); setMoreOpen(false); }}>
-                  Clear formatting
-                </MenuRow>
-                <div className="mx-3 my-1 border-t border-zinc-100" />
-                <MenuRow onClick={() => { if (onPageBreak) onPageBreak(); else exec("insertHTML", "<div data-pagebreak='1'></div>"); setMoreOpen(false); }}>
-                  <span className="text-zinc-600">{ICONS.pageBreak}</span>
-                  <span>Page break</span>
-                  <span className="ml-auto text-[10px] text-zinc-400">Ctrl+Enter</span>
-                </MenuRow>
-              </div>
-            </>
-          ) : null}
-        </div>
+        <IconBtn title="Insert link" active={editor?.isActive("link")} disabled={disabled} onClick={insertLink}>
+          <Link2 className="size-4" />
+        </IconBtn>
+        <IconBtn title="Upload an image" disabled={disabled || uploading} onClick={pickImage}>
+          <ImageIcon className="size-4" />
+        </IconBtn>
+        <IconBtn
+          title="Attach a file"
+          disabled={disabled || uploading || !documentId}
+          onClick={pickFile}
+        >
+          <Paperclip className="size-4" />
+        </IconBtn>
+        <IconBtn
+          title="Insert an image from a URL"
+          disabled={disabled}
+          onClick={insertImage}
+        >
+          <Link2 className="size-4" />
+        </IconBtn>
+        <DropdownMenu>
+          <Tooltip delayDuration={150}>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label="Table"
+                  disabled={disabled}
+                  onMouseDown={(e) => e.preventDefault()}
+                  className={cn("h-8 w-8 px-0", inTable && "bg-accent text-accent-foreground")}
+                >
+                  <TableIcon className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent>Table</TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent align="start" className="w-44">
+            <DropdownMenuLabel className="text-xs">Table</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => applyTable("insertTable")}>
+              <TableIcon className="size-4" /> Insert 3×3 table
+            </DropdownMenuItem>
+            {inTable ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => applyTable("addRowAfter")}>
+                  <List className="size-4" /> Add row below
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => applyTable("addColumnAfter")}>
+                  <List className="size-4" /> Add column right
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => applyTable("toggleHeaderRow")}>
+                  <List className="size-4" /> Toggle header row
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => applyTable("deleteRow")}>
+                  <List className="size-4" /> Delete row
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => applyTable("deleteColumn")}>
+                  <List className="size-4" /> Delete column
+                </DropdownMenuItem>
+              </>
+            ) : null}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <IconBtn
+          title="Add comment"
+          active={commentsOpen}
+          disabled={!editor || !canComment}
+          onClick={onAddComment}
+        >
+          <MessageSquarePlus className="size-4" />
+        </IconBtn>
+
+        <DropdownMenu>
+          <Tooltip delayDuration={150}>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label="More"
+                  disabled={disabled}
+                  onMouseDown={(e) => e.preventDefault()}
+                  className="h-8 w-8 px-0"
+                >
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent>More</TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent align="start" className="w-52">
+            <DropdownMenuItem onSelect={() => editor.chain().focus().toggleCodeBlock().run()}>
+              <Code className="size-4" /> Code block
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => editor.chain().focus().setHorizontalRule().run()}>
+              <SeparatorHorizontal className="size-4" /> Horizontal rule
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onInsertPageBreak?.()}>
+              <SeparatorHorizontal className="size-4" /> Page break
+              <span className="ml-auto text-[10px] text-muted-foreground">Ctrl+Enter</span>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={clearFormat}>
+              <Eraser className="size-4" /> Clear formatting
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         <div className="flex-1" />
 
-        <IconDropdown
-          title={`Mode: ${
-            mode === "editing"
-              ? "Editing"
-              : mode === "suggesting"
-                ? "Suggesting"
-                : "Viewing"
-          }`}
-          currentIcon={MODE_ICONS[mode] || MODE_ICONS.editing}
-          value={mode}
-          onSelect={(v) => setMode(v)}
-          items={MODES.map(([val, label]) => [val, label, MODE_ICONS[val]])}
-          align="right"
-        />
+        <span className="hidden text-[11px] tabular-nums text-muted-foreground md:inline">
+          {text.length.toLocaleString()} chars · {words.toLocaleString()} words
+        </span>
+        {/* Users without edit rights get a read-only indicator instead of a toggle. */}
+        {canEdit ? (
+          <IconBtn
+            title={viewOnly ? "Switch to editing" : "Switch to viewing"}
+            active={viewOnly}
+            onClick={() => setMode(viewOnly ? "editing" : "viewing")}
+          >
+            {viewOnly ? <Pencil className="size-4" /> : <Eye className="size-4" />}
+          </IconBtn>
+        ) : (
+          <span className="flex items-center gap-1 rounded bg-zinc-100 px-2 py-1 text-[11px] text-zinc-500">
+            <Eye className="size-3.5" />
+            Read only
+          </span>
+        )}
       </div>
 
-      {findOpen ? (
-        <div className="flex items-center gap-2 border-t border-zinc-100 bg-zinc-50 px-3 py-1.5">
-          <input
-            ref={findRef}
-            autoFocus
-            value={findQuery}
-            onChange={(e) => setFindQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") doFind();
-              if (e.key === "Escape") closeFind();
-            }}
-            placeholder="Find in document"
-            className="h-8 w-56 rounded-md border border-zinc-300 bg-white px-2 text-xs outline-none focus:border-blue-400"
-          />
-          <button
-            type="button"
-            onClick={doFind}
-            className="cursor-pointer rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-          >
-            Find
-          </button>
-          <button
-            type="button"
-            onClick={closeFind}
-            className="cursor-pointer rounded-md px-2 py-1.5 text-xs text-zinc-500 hover:bg-zinc-100"
-          >
-            Close
-          </button>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function MenuRow({ onClick, children }) {
-  return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.preventDefault();
-        onClick();
-      }}
-      className="flex w-full cursor-pointer items-center px-3 py-1.5 text-left text-xs text-zinc-700 hover:bg-zinc-100"
-    >
-      {children}
-    </button>
+      {/* Hidden pickers for the two attach paths. `accept` mirrors the server's
+          allow-list, so an unsupported file is filtered before it is chosen
+          rather than after a round trip. */}
+      <input
+        ref={imagePicker}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          // Reset first, so picking the same file twice in a row still fires.
+          e.target.value = "";
+          if (file) handleUpload(file, "image");
+        }}
+      />
+      <input
+        ref={filePicker}
+        type="file"
+        accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.txt,.csv,.zip,.png,.jpg,.jpeg,.gif,.webp,.mp3,.m4a,.wav,.weba"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) handleUpload(file, "file");
+        }}
+      />
+    </TooltipProvider>
   );
 }

@@ -1,3 +1,13 @@
 node_modules
 .env
 AI_Collaborative_Document_Editor_Master_Plan.docx
+
+# Local attachment storage (backend/config/storage.js STORAGE_ROOT). The bytes are
+# user data and must never be committed.
+.uploads/
+
+# Local run output: test-runner logs, dev-server logs, latency probes.
+*.log
+backend/prof.mjs
+backend/raw.mjs
+

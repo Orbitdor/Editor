@@ -8,6 +8,7 @@ import { Loader2 } from "lucide-react";
 
 import { loginUser } from "@/lib/api";
 import { setSession } from "@/lib/auth";
+import { GoogleSignInButton } from "@/components/google-signin-button";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -23,7 +24,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const data = await loginUser(form.get("email"), form.get("password"));
-      setSession(data.token, data.user);
+      setSession(data.user);
       toast.success(`Welcome back, ${data.user.name}`);
       router.push("/");
     } catch (err) {
@@ -57,11 +58,11 @@ export default function LoginPage() {
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="password">Password</Label>
-              <Input
+<Input
                 id="password"
                 name="password"
                 type="password"
-                placeholder="••••••••"
+                placeholder="Password"
                 required
                 autoComplete="current-password"
               />
@@ -73,6 +74,14 @@ export default function LoginPage() {
               {loading ? "Signing in..." : "Sign in"}
             </Button>
           </form>
+          <div className="mt-4 flex flex-col gap-3">
+            <div className="flex items-center gap-3 text-xs text-zinc-400">
+              <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+              or
+              <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+            </div>
+            <GoogleSignInButton />
+          </div>
           <p className="mt-4 text-center text-sm text-zinc-500">
             Don&apos;t have an account?{" "}
             <Link href="/register" className="font-medium text-blue-600 hover:underline">

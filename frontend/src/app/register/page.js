@@ -8,6 +8,7 @@ import { Loader2 } from "lucide-react";
 
 import { registerUser } from "@/lib/api";
 import { setSession } from "@/lib/auth";
+import { GoogleSignInButton } from "@/components/google-signin-button";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -31,7 +32,7 @@ export default function RegisterPage() {
     setLoading(true);
     try {
       const data = await registerUser(form.get("name"), form.get("email"), password);
-      setSession(data.token, data.user);
+      setSession(data.user);
       toast.success(`Account created. Welcome, ${data.user.name}!`);
       router.push("/");
     } catch (err) {
@@ -103,6 +104,14 @@ export default function RegisterPage() {
               {loading ? "Creating account..." : "Create account"}
             </Button>
           </form>
+          <div className="mt-4 flex flex-col gap-3">
+            <div className="flex items-center gap-3 text-xs text-zinc-400">
+              <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+              or
+              <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+            </div>
+            <GoogleSignInButton label="Sign up with Google" />
+          </div>
           <p className="mt-4 text-center text-sm text-zinc-500">
             Already have an account?{" "}
             <Link href="/login" className="font-medium text-blue-600 hover:underline">

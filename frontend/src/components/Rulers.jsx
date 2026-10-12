@@ -68,7 +68,7 @@ export function TopRuler({ width, indentLeft, onIndentLeft }) {
   }
 
   return (
-    <div className="relative mb-2.5 h-5 w-full rounded-[20px] border-b border-zinc-300 bg-white">
+    <div className="relative mb-2.5 h-5 w-full border-b border-zinc-300 bg-white">
       {ticks}
       {numerals}
       <div

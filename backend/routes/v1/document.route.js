@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAuth } from "../../middleware/auth.js";
 import { rateLimit } from "../../middleware/error.middleware.js";
-import { validateSchema, required, isString, isBoolean, isArrayOfStrings, isIn, maxLen, isId } from "../../middleware/validate.middleware.js";
+import { validateSchema, required, isString, isBoolean, isArrayOfStrings, isIn, maxLen, isId, isPositiveInt } from "../../middleware/validate.middleware.js";
 import {
   getDocs,
   createDoc,
@@ -9,6 +9,7 @@ import {
   saveDoc,
   trashDoc,
   restoreDoc,
+  deleteDoc,
   starDoc,
   tagDoc,
   getVersions,
@@ -28,12 +29,28 @@ r.get(
       scope: [isIn(["all", "starred", "trash"], "must be one of all|starred|trash")],
       q: [isString(), maxLen(200, "too long")],
       tags: [isString(), maxLen(500, "too long")],
+      workspaceId: [isId()],
+      folderId: [isId()],
     },
     "query"
   ),
   getDocs
 );
-r.post("/", validateSchema({ title: [isString(), maxLen(200, "too long")] }), createDoc);
+// `workspaceId` picks the team the document belongs to; omitting it uses the
+// caller's personal workspace. `folderId` files it under a folder, which must
+// live in that same workspace.
+r.post(
+  "/",
+  validateSchema(
+    {
+      title: [isString(), maxLen(200, "too long")],
+      workspaceId: [isId()],
+      folderId: [isId()],
+    },
+    "body"
+  ),
+  createDoc
+);
 
 r.get("/:id/export", validateSchema({ id: [isId()] }, "params"), exportDoc);
 
@@ -41,7 +58,7 @@ r.get("/:id/versions", validateSchema({ id: [isId()] }, "params"), getVersions);
 r.post(
   "/:id/versions/:version/restore",
   validateSchema(
-    { id: [isId()], version: [isString()] },
+    { id: [isId()], version: [isString(), isPositiveInt()] },
     "params"
   ),
   restoreDocVersion
@@ -49,6 +66,8 @@ r.post(
 
 r.post("/:id/trash", validateSchema({ id: [isId()] }, "params"), trashDoc);
 r.post("/:id/restore", validateSchema({ id: [isId()] }, "params"), restoreDoc);
+// Permanent delete, from the trash only. Also reclaims the attachment bytes.
+r.delete("/:id", validateSchema({ id: [isId()] }, "params"), deleteDoc);
 r.patch(
   "/:id/star",
   validateSchema({ id: [isId()] }, "params"),

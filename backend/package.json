@@ -6,7 +6,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon index.js",
-    "start": ""
+    "start": "node index.js",
+    "test": "node tests/run.mjs"
   },
   "keywords": [],
   "author": "",
@@ -14,10 +15,16 @@
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
+    "docx": "^9.8.1",
     "dotenv": "^18.0.1",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
-    "mongoose": "^9.10.1"
+    "mongoose": "^9.10.1",
+    "multer": "^2.4.0",
+    "pdfkit": "^0.15.2",
+    "ws": "^8.22.0",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.33"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

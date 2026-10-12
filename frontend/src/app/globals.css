@@ -130,8 +130,283 @@ body {
   overflow-x: hidden;
 }
 
-.editable-area:focus {
-  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.3);
+.tx-content {
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 16px;
+  line-height: 1.65;
+  color: #18181b;
+}
+
+.tx-content h1,
+.tx-content h2,
+.tx-content h3,
+.tx-content h4,
+.tx-content h5,
+.tx-content h6 {
+  color: #18181b;
+  font-weight: 700;
+  line-height: 1.25;
+  margin: 0.6em 0 0.3em;
+}
+
+.tx-content h1 {
+  font-size: 2em;
+}
+
+.tx-content h2 {
+  font-size: 1.5em;
+}
+
+.tx-content h3 {
+  font-size: 1.3em;
+}
+
+.tx-content h4 {
+  font-size: 1.15em;
+}
+
+.tx-content h5 {
+  font-size: 1em;
+}
+
+.tx-content h6 {
+  font-size: 0.875em;
+}
+
+.tx-content p {
+  margin: 0 0 0.75em;
+}
+
+.tx-content ul,
+.tx-content ol {
+  margin: 0 0 0.75em;
+  padding-left: 1.6em;
+}
+
+.tx-content li {
+  margin: 0.15em 0;
+}
+
+.tx-content blockquote {
+  border-left: 3px solid #d4d4d8;
+  margin: 0 0 0.75em;
+  padding: 0.15em 0 0.15em 1em;
+  color: #52525b;
+}
+
+.tx-content pre {
+  background: #f4f4f5;
+  border-radius: 6px;
+  margin: 0 0 0.75em;
+  padding: 12px 14px;
+  overflow-x: auto;
+}
+
+.tx-content code {
+  background: #f4f4f5;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 0.15em 0.35em;
+}
+
+.tx-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.tx-content a {
+  color: #2563eb;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* @mention chips: rendered as an inline node by the Mention extension. */
+.tx-content .mention {
+  background: #eef2ff;
+  border-radius: 3px;
+  color: #4338ca;
+  font-weight: 500;
+  padding: 0.1em 0.25em;
+  text-decoration: none;
+}
+
+/* Text with an open comment thread. Resolved threads lose the mark entirely,
+   so everything carrying this class is still being discussed. */
+.tx-content .comment-highlight {
+  background: #fef3c7;
+  border-bottom: 2px solid #fbbf24;
+  border-radius: 2px;
+  cursor: pointer;
+  padding: 0 1px;
+  transition: background-color 120ms ease;
+}
+
+.tx-content .comment-highlight:hover {
+  background: #fde68a;
+}
+
+
+.tx-content img {
+  height: auto;
+  max-width: 100%;
+}
+
+/* Attachment cards (master plan section 27). The card is a block the reader can
+   scan: icon, filename, size, and a download that goes through the server's
+   access check rather than straight to storage. */
+.tx-content .attachment-card {
+  align-items: center;
+  background: #fafafa;
+  border: 1px solid #e4e4e7;
+  border-radius: 8px;
+  display: flex;
+  gap: 0.6rem;
+  margin: 0.8em 0;
+  max-width: 520px;
+  padding: 0.55rem 0.7rem;
+}
+
+.tx-content .attachment-card-head {
+  align-items: center;
+  display: flex;
+  flex: 1;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.tx-content .attachment-card-icon {
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.tx-content .attachment-card-name {
+  color: #18181b;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tx-content .attachment-card-meta {
+  color: #71717a;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.tx-content .attachment-card-download {
+  border: 1px solid #d4d4d8;
+  border-radius: 6px;
+  color: #3f3f46;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.tx-content .attachment-card-download:hover {
+  background: #f4f4f5;
+  color: #18181b;
+}
+
+.tx-content hr {
+  border: none;
+  border-top: 1px solid #e4e4e7;
+  margin: 1.2em 0;
+}
+
+.tx-content ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+
+.tx-content ul[data-type="taskList"] li {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tx-content ul[data-type="taskList"] li > label {
+  display: inline-flex;
+  flex: none;
+}
+
+.tx-content ul[data-type="taskList"] li > label input {
+  cursor: pointer;
+  width: 15px;
+  height: 15px;
+}
+
+.tx-content ul[data-type="taskList"] li > div {
+  flex: 1;
+}
+
+.tx-content ul[data-type="taskList"] li[data-checked="true"] > div {
+  color: #a1a1aa;
+  text-decoration: line-through;
+}
+
+.tx-content .tableWrapper {
+  margin: 0 0 0.75em;
+  overflow-x: auto;
+}
+
+.tx-content table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.tx-content td,
+.tx-content th {
+  border: 1px solid #d4d4d8;
+  min-width: 32px;
+  padding: 6px 10px;
+  vertical-align: top;
+}
+
+.tx-content th {
+  background: #fafafa;
+  font-weight: 600;
+}
+
+.tx-content .selectedCell {
+  position: relative;
+}
+
+.tx-content .selectedCell::after {
+  background: rgba(37, 99, 235, 0.08);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 2;
+}
+
+.tx-content .column-resize-handle {
+  background: #2563eb;
+  bottom: 0;
+  pointer-events: none;
+  position: absolute;
+  right: -2px;
+  top: 0;
+  width: 4px;
+  z-index: 3;
+}
+
+.tx-content .ProseMirror.is-editor-empty::before,
+.tx-content .ProseMirror p.is-editor-empty:first-child::before,
+.tx-content .ProseMirror h1.is-editor-empty:first-child::before,
+.tx-content .ProseMirror h2.is-editor-empty:first-child::before,
+.tx-content .ProseMirror h3.is-editor-empty:first-child::before,
+.tx-content .ProseMirror h4.is-editor-empty:first-child::before,
+.tx-content .ProseMirror h5.is-editor-empty:first-child::before,
+.tx-content .ProseMirror h6.is-editor-empty:first-child::before {
+  color: #a1a1aa;
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
 }
 
 [data-pagebreak] {
@@ -146,74 +421,85 @@ body {
   html,
   body {
     background: #fff !important;
-    overflow: visible !important;
     height: auto !important;
+    overflow: visible !important;
   }
   .editor-canvas {
     background: #fff !important;
-    padding: 0 !important;
     overflow: visible !important;
+    padding: 0 !important;
   }
-  .print-hide {
+  .no-print {
     display: none !important;
   }
   body * {
     visibility: hidden;
   }
-  .print-area,
-  .print-area * {
+  .paper,
+  .paper * {
     visibility: visible;
   }
-  .editor-zoom-wrap {
-    transform: none !important;
-  }
-  .print-area {
-    position: absolute !important;
-    left: 0;
-    top: 0;
-    right: 0;
-    width: auto !important;
-    max-width: none;
-    margin: 0;
-    border: none;
-    box-shadow: none;
-  }
-  .print-page {
-    width: auto !important;
-    height: auto !important;
-    min-height: 0 !important;
-    overflow: visible !important;
+  .paper {
     border: none !important;
+    border-radius: 0;
     box-shadow: none !important;
+    left: 0;
     margin: 0 !important;
+    max-width: none !important;
     padding: 0 !important;
-    background: #fff !important;
-    color: #000 !important;
+    position: absolute !important;
+    right: 0;
+    top: 0;
+    width: auto !important;
+  }
+  [data-pagebreak] {
+    display: block !important;
+    height: auto;
     break-after: page;
     page-break-after: always;
   }
-  .print-page:last-child {
-    break-after: auto;
-    page-break-after: auto;
-  }
-  .print-page h1,
-  .print-page h2,
-  .print-page h3,
-  .print-page h4,
-  .print-page h5,
-  .print-page h6 {
+  .tx-content h1,
+  .tx-content h2,
+  .tx-content h3,
+  .tx-content h4,
+  .tx-content h5,
+  .tx-content h6 {
     break-after: avoid;
     page-break-after: avoid;
   }
-  .print-page p,
-  .print-page li {
+  .tx-content p,
+  .tx-content li {
     orphans: 3;
     widows: 3;
   }
-  .print-page table,
-  .print-page figure,
-  .print-page img {
+  .tx-content table,
+  .tx-content figure,
+  .tx-content img {
     break-inside: avoid;
     page-break-inside: avoid;
   }
+}
+.collaboration-cursor__caret {
+  border-left: 1px solid;
+  border-right: 1px solid;
+  margin-left: -1px;
+  margin-right: -1px;
+  pointer-events: none;
+  position: relative;
+  word-break: normal;
+}
+
+.collaboration-cursor__label {
+  border-radius: 3px;
+  color: #fff;
+  font-size: 12px;
+  font-style: normal;
+  left: -1px;
+  line-height: 1.4;
+  padding: 1px 6px;
+  position: absolute;
+  top: -1.4em;
+  user-select: none;
+  white-space: nowrap;
+  z-index: 999;
 }
