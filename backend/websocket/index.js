@@ -6,6 +6,13 @@ export function startWebsocket(server) {
   const wss = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", (request, socket, head) => {
+    // A serverless host serves the function under `/api`, so a socket arrives as
+    // `/api/ws/...`; running locally it arrives as `/ws/...`. Strip the prefix so
+    // both forms route identically (the handlers parse the path themselves).
+    if (request.url?.startsWith("/api/ws")) {
+      request.url = request.url.slice(4);
+    }
+
     const path = request.url?.split("?")[0] || "";
 
     // The notification channel is per user, not per document, so it is routed
