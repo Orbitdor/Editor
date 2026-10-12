@@ -1,10 +1,23 @@
 import jwt from "jsonwebtoken";
+import Notification from "../models/Notification.model.js";
 import { ACCESS_COOKIE, readCookie } from "../services/token.service.js";
 
 const SECRET = process.env.JWT_SECRET || "dev-secret";
 
 /** How often an idle socket is pinged so a dead peer is noticed. */
 const PING_MS = 30_000;
+
+/**
+ * How often a socket checks Mongo for a notification the push path could not
+ * deliver.
+ *
+ * On a serverless host the request that creates a notification runs in a
+ * different function instance than the socket, so in-process delivery cannot
+ * reach it. This function owns its Mongo connection, so polling the feed is what
+ * actually delivers the event there. On a single-process server it is a cheap
+ * safety net behind the immediate in-process push.
+ */
+const DB_POLL_MS = 10_000;
 
 /** userId -> Set<WebSocket>. One entry per tab the user has open. */
 const clients = new Map();
@@ -52,12 +65,42 @@ export function setupNotifyConnection(conn, request) {
   }, PING_MS);
   ping.unref?.();
 
+  // Cross-instance delivery: watch the newest notification for this user and
+  // push when it changes. `lastSeen` starts null so the first pass only records
+  // the baseline; the client fetches on connect, so nothing is missed.
+  let lastSeen = null;
+  let polling = false;
+  const poll = setInterval(async () => {
+    if (polling || conn.readyState !== 1) return;
+    polling = true;
+    try {
+      const latest = await Notification.findOne({ user: userId })
+        .sort("-createdAt")
+        .select("_id")
+        .lean();
+      const id = latest?._id ? String(latest._id) : null;
+      const changed = lastSeen !== null && id !== lastSeen;
+      const alreadySent = conn.notifyResyncPending;
+      conn.notifyResyncPending = false;
+      lastSeen = id;
+      if (changed && !alreadySent) {
+        conn.send(JSON.stringify({ type: "notification" }));
+      }
+    } catch {
+      // A transient DB error just means the next tick retries.
+    } finally {
+      polling = false;
+    }
+  }, DB_POLL_MS);
+  poll.unref?.();
+
   conn.on("message", () => {
     // The channel is push-only; ignore anything the client sends.
   });
 
   conn.on("close", () => {
     clearInterval(ping);
+    clearInterval(poll);
     const current = clients.get(userId);
     if (!current) return;
     current.delete(conn);
@@ -94,6 +137,8 @@ export function publishToUsers(userIds, message) {
     for (const conn of set) {
       if (conn.readyState !== 1) continue;
       try {
+        // Mark it so the DB poll does not push the same change again.
+        conn.notifyResyncPending = true;
         conn.send(payload);
       } catch {
         // ignore

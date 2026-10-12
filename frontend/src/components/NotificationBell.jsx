@@ -11,12 +11,12 @@ import { cn } from "@/lib/utils";
 /**
  * Resync interval for the unread badge.
  *
- * Where a realtime socket exists this is only a slow safety net (a dropped
- * socket while the tab slept). Without one the platform cannot push, so this
- * poll is the only background refresh: kept slow and skipped while the tab is
- * hidden, with an immediate refresh on focus and when the panel opens.
+ * When a realtime socket is configured the server pushes updates, so this is only
+ * a very slow safety net. Without one the platform cannot push, so this poll is the
+ * only background refresh: kept slow and skipped while the tab is hidden, with an
+ * immediate refresh on focus and when the panel opens.
  */
-const POLL_MS = NOTIFICATIONS_REALTIME ? 5 * 60_000 : 60_000;
+const POLL_MS = NOTIFICATIONS_REALTIME ? 10 * 60_000 : 60_000;
 
 /** Icon-free label per notification type. */
 const TYPE_LABEL = {
@@ -55,7 +55,7 @@ export default function NotificationBell() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await getNotifications(20);
+      const data = await getNotifications(30);
       setItems(data.items || []);
       setUnread(data.unread || 0);
     } catch {
@@ -65,9 +65,10 @@ export default function NotificationBell() {
     }
   }, []);
 
-  // Initial load, then push updates over the socket. A slow interval and a
-  // focus listener act as the fallback when there is no socket, and as a safety
-  // net when one exists but silently dropped.
+  // Initial load, then push updates over the socket. Without a socket the slow
+  // interval plus focus/visibility listeners are the only refresh. With one, those
+  // extra fetches are dropped: the socket already resyncs on every (re)connect, so
+  // a focus refresh only adds calls without adding freshness.
   useEffect(() => {
     const kickoff = setTimeout(load, 0);
 
@@ -77,9 +78,10 @@ export default function NotificationBell() {
       if (document.visibilityState === "visible") load();
     }, POLL_MS);
 
-    // Catch up the moment the user comes back to the tab.
+    // Catch up the moment the user comes back to the tab, but only when there is
+    // no socket to push the change for us.
     const onVisible = () => {
-      if (document.visibilityState === "visible") load();
+      if (!NOTIFICATIONS_REALTIME && document.visibilityState === "visible") load();
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);

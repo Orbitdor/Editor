@@ -53,9 +53,8 @@ export function subscribeNotifications(onEvent) {
     }
     if (stopped) return;
 
-    const url = `${NOTIFY_WS_BASE}/notifications${
-      token ? `?token=${encodeURIComponent(token)}` : ""
-    }`;
+    const query = token ? `?token=${encodeURIComponent(token)}` : "";
+    const url = `${NOTIFY_WS_BASE}${query}`;
 
     try {
       socket = new WebSocket(url);
@@ -70,7 +69,9 @@ export function subscribeNotifications(onEvent) {
     socket.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        if (message?.type && message.type !== "ready") onEvent(message);
+        // "ready" is delivered on every (re)connect. Forwarding it makes the bell
+        // resync once after a drop, so an event missed while offline is not lost.
+        if (message?.type) onEvent(message);
       } catch {
         // A malformed frame should never break the bell.
       }
