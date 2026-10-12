@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import mongoose from "mongoose";
 import { ApiError } from "../utils/ApiError.js";
+import { connectDB } from "../config/db.js";
 import {
   MAGIC_BYTES,
   ZIP_BASED_MIME_TYPES,
@@ -82,7 +84,60 @@ const localProvider = {
   },
 };
 
-const providers = { local: localProvider };
+/**
+ * GridFS-backed provider, for hosts whose filesystem does not survive a request
+ * (serverless functions such as Vercel). Bytes are chunked into the same MongoDB
+ * the app already uses, so a file larger than the 16 MB document limit is safe.
+ * Selected with STORAGE_PROVIDER=mongo.
+ */
+const gridFsProvider = {
+  name: "mongo",
+
+  async bucket() {
+    // The connection is established lazily because a cold serverless invocation
+    // may serve this call before the module-level connect has resolved.
+    if (mongoose.connection.readyState !== 1) await connectDB();
+    const db = mongoose.connection.db;
+    if (!db) throw new ApiError(503, "Storage is not available yet");
+    return new mongoose.mongo.GridFSBucket(db, { bucketName: "uploads" });
+  },
+
+  async put(key, buffer) {
+    const bucket = await this.bucket();
+    await new Promise((resolve, reject) => {
+      const stream = bucket.openUploadStream(key);
+      stream.on("error", reject);
+      stream.on("finish", resolve);
+      stream.end(buffer);
+    });
+    return key;
+  },
+
+  async get(key) {
+    const bucket = await this.bucket();
+    const file = await bucket.find({ filename: key }).limit(1).next();
+    if (!file) throw new ApiError(404, "That file is no longer available");
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      const stream = bucket.openDownloadStream(file._id);
+      stream.on("data", (chunk) => chunks.push(chunk));
+      stream.on("error", reject);
+      stream.on("end", () => resolve(Buffer.concat(chunks)));
+    });
+  },
+
+  async delete(key) {
+    const bucket = await this.bucket();
+    const files = await bucket.find({ filename: key }).toArray();
+    await Promise.all(files.map((f) => bucket.delete(f._id).catch(() => null)));
+  },
+
+  async signed() {
+    return null;
+  },
+};
+
+const providers = { local: localProvider, mongo: gridFsProvider };
 
 function provider() {
   const { provider: name } = storageConfig();

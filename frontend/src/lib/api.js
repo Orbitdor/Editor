@@ -1,8 +1,10 @@
 import { clearSession } from "@/lib/auth";
 
-const API_ROOT = (
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000"
-).replace(/\/+$/, "");
+// Default to a same-origin relative path so `/api/*` goes through the Next.js
+// rewrite proxy (see next.config.mjs). That keeps the HttpOnly session cookie
+// first-party in every environment; set NEXT_PUBLIC_API_URL only to bypass the
+// proxy and call an API host directly.
+const API_ROOT = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
 
 const BASE = `${API_ROOT}/api/v1/documents`;
 const AUTH = `${API_ROOT}/api/v1/auth`;
