@@ -12,10 +12,11 @@ import { cn } from "@/lib/utils";
  * Resync interval for the unread badge.
  *
  * Where a realtime socket exists this is only a slow safety net (a dropped
- * socket while the tab slept). Without one it is the primary refresh path and
- * has to be frequent enough to feel live.
+ * socket while the tab slept). Without one the platform cannot push, so this
+ * poll is the only background refresh: kept slow and skipped while the tab is
+ * hidden, with an immediate refresh on focus and when the panel opens.
  */
-const POLL_MS = NOTIFICATIONS_REALTIME ? 5 * 60_000 : 30_000;
+const POLL_MS = NOTIFICATIONS_REALTIME ? 5 * 60_000 : 60_000;
 
 /** Icon-free label per notification type. */
 const TYPE_LABEL = {
@@ -103,9 +104,16 @@ export default function NotificationBell() {
   }, [open]);
 
   async function openPanel() {
+    const opening = !open;
     setOpen((v) => !v);
+    if (!opening) return;
+
+    // Opening is the moment freshness matters, so fetch before the read-mark
+    // lands rather than waiting for the slow background poll.
+    await load();
+
     // Opening the panel is an implicit acknowledgement of what is on screen.
-    if (!open && unread > 0) {
+    if (unread > 0) {
       try {
         await markNotificationsRead();
         setUnread(0);
