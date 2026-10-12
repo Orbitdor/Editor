@@ -48,6 +48,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
+import PromptDialog from "@/components/PromptDialog";
 import { cn } from "@/lib/utils";
 import { FONT_FAMILIES, FONT_SIZES, LINE_HEIGHTS, COLORS } from "@/lib/tiptap";
 import {
@@ -246,6 +247,9 @@ export default function Toolbar({
   const imagePicker = useRef(null);
   const filePicker = useRef(null);
   const [uploading, setUploading] = useState(false);
+  // The two "type a URL" actions open a dialog instead of window.prompt.
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [imageDialogOpen, setImageDialogOpen] = useState(false);
 
   useEffect(() => {
     if (!editor) return;
@@ -289,19 +293,25 @@ export default function Toolbar({
   const blockLabel = (BLOCK_TYPES.find(([v]) => v === block)?.[1]) || "Paragraph";
   const sizeLabel = fontSize ? `Size · ${fontSize}` : "Size";
   const fontLabel = fontFamily || "Font";
+  // Pre-fills the link dialog so an existing link can be edited or cleared.
+  const linkHref = editor && !disabled ? editor.getAttributes("link").href || "" : "";
 
   const insertLink = () => {
     if (disabled) return;
-    const prev = editor.getAttributes("link").href || "";
-    const url = window.prompt("Link URL:", prev);
-    if (url === null) return;
+    setLinkDialogOpen(true);
+  };
+
+  const applyLink = (url) => {
     if (url === "") editor.chain().focus().unsetLink().run();
     else editor.chain().focus().setLink({ href: url }).run();
   };
 
   const insertImage = () => {
     if (disabled) return;
-    const url = window.prompt("Image URL:", "https://");
+    setImageDialogOpen(true);
+  };
+
+  const applyImage = (url) => {
     if (url) editor.chain().focus().setImage({ src: url }).run();
   };
 
@@ -628,6 +638,28 @@ export default function Toolbar({
           </span>
         )}
       </div>
+
+      {/* Styled stand-ins for window.prompt. The native dialog blocked the tab
+          and looked like a browser alert inside an otherwise custom editor. */}
+      <PromptDialog
+        open={linkDialogOpen}
+        onOpenChange={setLinkDialogOpen}
+        title={linkHref ? "Edit link" : "Insert link"}
+        description="Paste a web address. Clear the field to remove the link."
+        placeholder="https://example.com"
+        defaultValue={linkHref}
+        submitLabel={linkHref ? "Update" : "Insert"}
+        onConfirm={applyLink}
+      />
+      <PromptDialog
+        open={imageDialogOpen}
+        onOpenChange={setImageDialogOpen}
+        title="Insert image from URL"
+        description="The image stays hosted where it is; the document stores its address."
+        placeholder="https://example.com/photo.png"
+        submitLabel="Insert"
+        onConfirm={applyImage}
+      />
 
       {/* Hidden pickers for the two attach paths. `accept` mirrors the server's
           allow-list, so an unsupported file is filtered before it is chosen
