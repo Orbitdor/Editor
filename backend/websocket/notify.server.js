@@ -65,26 +65,28 @@ export function setupNotifyConnection(conn, request) {
   }, PING_MS);
   ping.unref?.();
 
-  // Cross-instance delivery: watch the newest notification for this user and
-  // push when it changes. `lastSeen` starts null so the first pass only records
-  // the baseline; the client fetches on connect, so nothing is missed.
-  let lastSeen = null;
+  // Cross-instance delivery: watch for notifications newer than the moment this
+  // socket connected. Scanning by time (not by "newest id") avoids the race where
+  // a notification lands between connect and the first tick and gets mistaken for
+  // the baseline. The client fetches on connect, so anything before `since` is
+  // already on its screen.
+  let since = new Date();
   let polling = false;
   const poll = setInterval(async () => {
     if (polling || conn.readyState !== 1) return;
     polling = true;
     try {
-      const latest = await Notification.findOne({ user: userId })
+      const latest = await Notification.findOne({ user: userId, createdAt: { $gt: since } })
         .sort("-createdAt")
-        .select("_id")
+        .select("createdAt")
         .lean();
-      const id = latest?._id ? String(latest._id) : null;
-      const changed = lastSeen !== null && id !== lastSeen;
       const alreadySent = conn.notifyResyncPending;
       conn.notifyResyncPending = false;
-      lastSeen = id;
-      if (changed && !alreadySent) {
-        conn.send(JSON.stringify({ type: "notification" }));
+      if (latest?.createdAt) {
+        since = latest.createdAt;
+        if (!alreadySent) {
+          conn.send(JSON.stringify({ type: "notification" }));
+        }
       }
     } catch {
       // A transient DB error just means the next tick retries.
