@@ -60,6 +60,11 @@ const server = spawn(process.execPath, ["index.js"], {
     RATE_LIMIT_GOOGLE_SIGNIN: "500",
     RATE_LIMIT_GOOGLE_CONNECT: "500",
     RATE_LIMIT_GOOGLE_DRIVE: "500",
+    // OCR reads with the bundled local engines (PP-OCR through onnxruntime,
+    // with Tesseract as the fallback), whose models are downloaded on first
+    // use. Tests pin the offline mock provider so the suite stays hermetic and
+    // fast and never depends on that download.
+    OCR_PROVIDER: "openai",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });

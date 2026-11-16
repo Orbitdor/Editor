@@ -2,9 +2,17 @@ import http from "http";
 import app, { connectDB } from "./app.js";
 import { startWebsocket } from "./websocket/index.js";
 import { ensureBuiltIns } from "./services/template.service.js";
+import { connectCache } from "./services/cache.service.js";
 
 const server = http.createServer(app);
 startWebsocket(server);
+
+// The cache is optional and must never delay or block startup: opening the
+// connection is fire-and-forget, and the service falls back to an in-process
+// store until (or unless) Redis comes up.
+connectCache()
+  .then((status) => console.log(`Cache mode: ${status.mode}`))
+  .catch(() => null);
 
 connectDB()
   .then(async (ok) => {

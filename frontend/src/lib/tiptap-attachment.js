@@ -81,10 +81,22 @@ const AttachmentNode = Node.create({
   addNodeView() {
     // The rendered card is plain DOM rather than a React component, because it
     // has to survive inside the ProseMirror view without a React root per node.
-    return ({ node }) => {
+    return ({ node, editor, getPos }) => {
       const dom = document.createElement("div");
       dom.className = "attachment-card";
       dom.setAttribute("data-attachment-id", node.attrs.attachmentId || "");
+
+      const isImage = node.attrs.mime?.startsWith("image/");
+      const isPdf = node.attrs.mime === "application/pdf";
+
+      if (isImage && node.attrs.attachmentId) {
+        const thumb = document.createElement("img");
+        thumb.className = "attachment-card-thumb";
+        thumb.src = attachmentContentUrl(node.attrs.attachmentId, { inline: true });
+        thumb.alt = node.attrs.name || "Attachment preview";
+        thumb.loading = "lazy";
+        dom.appendChild(thumb);
+      }
 
       const head = document.createElement("div");
       head.className = "attachment-card-head";
@@ -106,16 +118,57 @@ const AttachmentNode = Node.create({
 
       dom.appendChild(head);
 
-      // The download link points at the content route, which the browser opens
-      // with the session cookie attached; there is no token in the URL.
+      const actions = document.createElement("div");
+      actions.className = "attachment-card-actions";
+
+      // The content route is resolved with the session cookie; there is no
+      // token in the URL, so a leaked document does not leak its files.
+      const contentUrl = node.attrs.attachmentId
+        ? attachmentContentUrl(node.attrs.attachmentId)
+        : "#";
+
+      if (isImage || isPdf) {
+        const preview = document.createElement("a");
+        preview.className = "attachment-card-action";
+        preview.href = node.attrs.attachmentId
+          ? attachmentContentUrl(node.attrs.attachmentId, { inline: true })
+          : "#";
+        preview.target = "_blank";
+        preview.rel = "noopener noreferrer";
+        preview.textContent = "Preview";
+        actions.appendChild(preview);
+      }
+
       const link = document.createElement("a");
-      link.className = "attachment-card-download";
-      link.href = node.attrs.attachmentId ? attachmentContentUrl(node.attrs.attachmentId) : "#";
+      link.className = "attachment-card-action attachment-card-download";
+      link.href = contentUrl;
       link.rel = "noopener noreferrer";
       link.textContent = "Download";
-      dom.appendChild(link);
+      actions.appendChild(link);
 
-      return { dom };
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "attachment-card-action attachment-card-remove";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => {
+        if (!window.confirm("Remove this attachment card from the document?")) return;
+        const pos = getPos();
+        if (typeof pos !== "number") return;
+        editor
+          .chain()
+          .focus()
+          .deleteRange({ from: pos, to: pos + node.nodeSize })
+          .run();
+      });
+      actions.appendChild(remove);
+
+      dom.appendChild(actions);
+
+      return {
+        dom,
+        // Cards are immutable once inserted; there is nothing to reconcile.
+        update: () => false,
+      };
     };
   },
 

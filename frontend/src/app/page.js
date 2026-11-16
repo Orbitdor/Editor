@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -91,6 +91,12 @@ export default function Dashboard() {
   const [me, setMe] = useState(null);
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
+  // The dashboard loads twice on mount: once for the caller's own documents,
+  // then again the moment WorkspacePanel selects the default workspace. The
+  // placeholder is a first-paint affair -- only the first pass may blank the
+  // list, otherwise an empty account flashes "No documents yet", blanks, and
+  // flashes it again. Every later pass updates the list in place.
+  const loadedOnceRef = useRef(false);
   const [scope, setScope] = useState("all");
   const [query, setQuery] = useState("");
   const [workspaceId, setWorkspaceId] = useState(null);
@@ -135,7 +141,11 @@ const canCreate = activeRole === null || ["owner", "admin", "editor"].includes(a
   useEffect(() => {
     let cancelled = false;
     const raf = requestAnimationFrame(() => {
-      setLoading(true);
+      // Only the first pass shows the placeholder. Later passes (the default
+      // workspace being picked right after mount, a scope or folder change)
+      // keep the previous list on screen and swap it when the data lands, so
+      // the empty state is never drawn twice.
+      if (!loadedOnceRef.current) setLoading(true);
       load()
         .then((data) => {
           if (!cancelled) setDocs(data);
@@ -152,7 +162,9 @@ const canCreate = activeRole === null || ["owner", "admin", "editor"].includes(a
           if (!cancelled) toast.error("Could not load documents");
         })
         .finally(() => {
-          if (!cancelled) setLoading(false);
+          if (cancelled) return;
+          loadedOnceRef.current = true;
+          setLoading(false);
         });
     });
     return () => {
@@ -262,7 +274,7 @@ const canCreate = activeRole === null || ["owner", "admin", "editor"].includes(a
               {SIDEBAR_ITEMS.find((i) => i.key === scope)?.label}
             </h1>
             <p className="text-sm text-zinc-500">
-              {me?.name ? `Signed in as ${me.name}` : "Loading account..."}
+              {me?.name ? `Signed in as ${me.name}` : ""}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -290,9 +302,9 @@ const canCreate = activeRole === null || ["owner", "admin", "editor"].includes(a
           </div>
         </div>
 
-        {loading ? (
-          <p className="text-zinc-500">Loading...</p>
-        ) : docs.length === 0 ? (
+        {/* `loading` is true only for the first pass, so the list is drawn in
+            place afterwards without a flicker. */}
+        {loading ? null : docs.length === 0 ? (
           <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-zinc-300 px-6 py-16 text-center">
             <FileText className="size-10 text-zinc-400" />
             <p className="text-zinc-500">

@@ -8,6 +8,8 @@ import User from "../models/User.model.js";
 import { ApiError } from "../utils/ApiError.js";
 import { DEFAULT_PLAN, describeLimitBreach, planFor } from "../config/plans.js";
 import * as audit from "./audit.service.js";
+import { cacheConfig } from "../config/cache.js";
+import { cacheDel, cacheKey, getOrSet } from "./cache.service.js";
 
 /**
  * Workspaces (master plan section 36).
@@ -70,6 +72,7 @@ async function createWorkspace(owner, { name, isPersonal = false } = {}) {
     meta: { isPersonal },
   });
 
+  await invalidateWorkspaceCaches(owner._id);
   return workspace;
 }
 
@@ -152,23 +155,39 @@ export async function refreshStats(workspaceId) {
   );
 }
 
+/**
+ * Drop the cached workspace list for each user given.
+ *
+ * A workspace list is per-user, and a single change usually affects two of them:
+ * the person who acted and the person it was acted on (an invite, a role change,
+ * a removal). Both ids are passed so neither keeps a stale view.
+ */
+function invalidateWorkspaceCaches(...userIds) {
+  const unique = [...new Set(userIds.filter(Boolean).map(String))];
+  return Promise.all(unique.map((id) => cacheDel(cacheKey("ws:list", id))));
+}
+
 /** Workspaces the user belongs to, personal one first. */
 export async function listForUser(userId) {
-  const memberships = await WorkspaceMember.find({ user: userId, status: "active" })
-    .select("workspace role")
-    .lean();
-  if (!memberships.length) return [];
+  return getOrSet(cacheKey("ws:list", userId), cacheConfig().ttl.workspaces, async () => {
+    const memberships = await WorkspaceMember.find({ user: userId, status: "active" })
+      .select("workspace role")
+      .lean();
+    if (!memberships.length) return [];
 
-  const ids = memberships.map((m) => m.workspace);
-  const workspaces = await Workspace.find({
-    _id: { $in: ids },
-    trashedAt: null,
-  }).lean();
+    const ids = memberships.map((m) => m.workspace);
+    const workspaces = await Workspace.find({
+      _id: { $in: ids },
+      trashedAt: null,
+    }).lean();
 
-  const roleById = new Map(memberships.map((m) => [String(m.workspace), m.role]));
-  return workspaces
-    .map((w) => ({ ...serialize(w), myRole: roleById.get(String(w._id)) || null }))
-    .sort((a, b) => Number(b.isPersonal) - Number(a.isPersonal) || a.name.localeCompare(b.name));
+    const roleById = new Map(memberships.map((m) => [String(m.workspace), m.role]));
+    return workspaces
+      .map((w) => ({ ...serialize(w), myRole: roleById.get(String(w._id)) || null }))
+      .sort(
+        (a, b) => Number(b.isPersonal) - Number(a.isPersonal) || a.name.localeCompare(b.name)
+      );
+  });
 }
 
 function serialize(workspace) {
@@ -284,6 +303,7 @@ export async function updateWorkspace(workspaceId, userId, { name }, req) {
     meta: { from: before, to: clean },
   });
 
+  await invalidateWorkspaceCaches(userId);
   return serialize(workspace.toObject());
 }
 
@@ -323,6 +343,10 @@ export async function changePlan(workspaceId, userId, { plan, actor }, req) {
     meta: { from: before, to: next },
   });
 
+  // The plan is shown in every member's sidebar, but billing changes are rare and
+  // gated behind a flag, so only the actor's list is cleared and the short TTL
+  // covers everyone else.
+  await invalidateWorkspaceCaches(userId);
   return serialize(workspace.toObject());
 }
 
@@ -338,6 +362,7 @@ export async function trashWorkspace(workspaceId, userId, req) {
     resource: { type: "workspace", id: workspaceId, name: workspace.name },
     req,
   });
+  await invalidateWorkspaceCaches(userId);
   return { trashed: true };
 }
 
@@ -366,6 +391,7 @@ export async function restoreWorkspace(workspaceId, userId, req) {
     req,
     meta: { restored: true },
   });
+  await invalidateWorkspaceCaches(userId);
   return { restored: true };
 }
 
@@ -451,6 +477,10 @@ export async function inviteMember(workspaceId, userId, { email, role = "member"
     meta: { role, status: member.status },
   });
 
+  // The invitee gains a workspace and the actor's member count changes, so both
+  // lists are dropped. A not-yet-registered invitee has no list to clear yet.
+  await invalidateWorkspaceCaches(userId, existingUser?._id);
+
   return {
     id: String(member._id),
     user: member.user ? String(member.user) : null,
@@ -492,6 +522,7 @@ export async function updateMemberRole(workspaceId, userId, { memberId, role } =
     meta: { from: before, to: role },
   });
 
+  await invalidateWorkspaceCaches(userId, member.user);
   return { id: String(member._id), role: member.role };
 }
 
@@ -516,6 +547,7 @@ export async function removeMember(workspaceId, userId, { memberId } = {}, req) 
     meta: { role: member.role },
   });
 
+  await invalidateWorkspaceCaches(userId, member.user);
   return { removed: true };
 }
 
@@ -552,6 +584,8 @@ export async function transferOwnership(workspaceId, userId, { memberId } = {}, 
     meta: { transferredOwnershipTo: String(target.user) },
   });
 
+  // Both the outgoing and incoming owner see a different role and workspace now.
+  await invalidateWorkspaceCaches(userId, target.user);
   return { owner: String(workspace.owner) };
 }
 
@@ -586,6 +620,7 @@ export async function claimInvitations(user) {
     });
   }
 
+  await invalidateWorkspaceCaches(user._id);
   return pending.map((p) => ({ workspace: String(p.workspace), role: p.role }));
 }
 
@@ -606,5 +641,6 @@ export async function leaveWorkspace(workspaceId, userId, req) {
     meta: { self: true },
   });
 
+  await invalidateWorkspaceCaches(userId);
   return { left: true };
 }

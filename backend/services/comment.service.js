@@ -3,11 +3,25 @@ import User from "../models/User.model.js";
 import { ApiError } from "../utils/ApiError.js";
 import { authorize, authorizeComment, canAccess } from "./access.service.js";
 import { notifyMany } from "./notification.service.js";
+import { cacheConfig } from "../config/cache.js";
+import { cacheDel, cacheKey, getOrSet } from "./cache.service.js";
 
 /** Max characters kept from the quoted anchor text. */
 const MAX_QUOTE = 500;
 /** Max mentions resolved per comment. */
 const MAX_MENTIONS = 20;
+
+/**
+ * Drop the cached comment threads for a document.
+ *
+ * Threads are document-scoped and identical for every viewer, so one key serves
+ * them all -- but every mutation has to clear it, because a comment thread that
+ * looks a few seconds out of date is the most obvious possible cache bug.
+ */
+function invalidateCommentCaches(docId) {
+  if (!docId) return Promise.resolve();
+  return cacheDel(cacheKey("comments", docId));
+}
 
 /**
  * Serialize a comment row for the API, including author display data.
@@ -76,39 +90,43 @@ function buildThreads(comments) {
  * @param {string} userId Caller (needs viewer access).
  */
 export async function listComments(docId, userId) {
+  // The permission check and trash check stay outside the cached loader, so a
+  // viewer of a document that was just trashed is still refused immediately.
   const { doc } = await authorize(docId, userId, "viewer");
   if (doc.trashedAt) throw new ApiError(410, "Document is in trash");
 
-  const rows = await Comment.find({ document: docId })
-    .populate("author", "name email")
-    .sort({ createdAt: 1 })
-    .lean();
+  return getOrSet(cacheKey("comments", docId), cacheConfig().ttl.comments, async () => {
+    const rows = await Comment.find({ document: docId })
+      .populate("author", "name email")
+      .sort({ createdAt: 1 })
+      .lean();
 
-  const comments = rows.map((r) => {
-    const author = r.author
-      ? { userId: r.author._id, name: r.author.name, email: r.author.email }
-      : null;
-    return {
-      id: String(r._id),
-      parentId: r.parent ? String(r.parent) : null,
-      documentId: String(r.document),
-      body: r.body,
-      quotedText: r.quotedText || "",
-      anchor: { from: r.anchor?.from ?? null, to: r.anchor?.to ?? null },
-      mentions: (r.mentions || []).map((m) => ({
-        userId: String(m.user),
-        email: m.email,
-        name: m.name,
-      })),
-      resolved: Boolean(r.resolved),
-      resolvedAt: r.resolvedAt,
-      editedAt: r.editedAt,
-      createdAt: r.createdAt,
-      author,
-    };
+    const comments = rows.map((r) => {
+      const author = r.author
+        ? { userId: r.author._id, name: r.author.name, email: r.author.email }
+        : null;
+      return {
+        id: String(r._id),
+        parentId: r.parent ? String(r.parent) : null,
+        documentId: String(r.document),
+        body: r.body,
+        quotedText: r.quotedText || "",
+        anchor: { from: r.anchor?.from ?? null, to: r.anchor?.to ?? null },
+        mentions: (r.mentions || []).map((m) => ({
+          userId: String(m.user),
+          email: m.email,
+          name: m.name,
+        })),
+        resolved: Boolean(r.resolved),
+        resolvedAt: r.resolvedAt,
+        editedAt: r.editedAt,
+        createdAt: r.createdAt,
+        author,
+      };
+    });
+
+    return buildThreads(comments).map(serializeThread);
   });
-
-  return buildThreads(comments).map(serializeThread);
 }
 
 /** Final pass to strip mongoose internals from thread nodes. */
@@ -201,6 +219,8 @@ export async function createComment(docId, userId, payload) {
       : "New comment on your document",
   });
 
+  await invalidateCommentCaches(docId);
+
   const author = await User.findById(userId).select("name email").lean();
   return serialize({
     ...comment.toObject(),
@@ -248,6 +268,8 @@ export async function replyToComment(docId, commentId, userId, payload) {
     text: body.slice(0, 140),
   });
 
+  await invalidateCommentCaches(docId);
+
   const author = await User.findById(userId).select("name email").lean();
   return serialize({
     ...reply.toObject(),
@@ -275,6 +297,8 @@ export async function editComment(docId, commentId, userId, payload) {
   comment.editedAt = new Date();
   await comment.save();
 
+  await invalidateCommentCaches(docId);
+
   // Return the same shape as create/reply so the client can update in place.
   const author = await User.findById(userId).select("name email").lean();
   return serialize({
@@ -298,6 +322,7 @@ export async function setResolved(docId, commentId, userId, resolved) {
   comment.resolvedAt = resolved ? new Date() : null;
   await comment.save({ validateModifiedOnly: true });
 
+  await invalidateCommentCaches(docId);
   return { id: String(comment._id), resolved: comment.resolved, resolvedAt: comment.resolvedAt };
 }
 
@@ -321,6 +346,7 @@ export async function deleteComment(docId, commentId, userId) {
   } else {
     await comment.deleteOne();
   }
+  await invalidateCommentCaches(docId);
   return { id: String(commentId), deleted: true };
 }
 
@@ -329,4 +355,5 @@ export async function deleteComment(docId, commentId, userId) {
  */
 export async function purgeDocumentComments(docId) {
   await Comment.deleteMany({ document: docId });
+  await invalidateCommentCaches(docId);
 }

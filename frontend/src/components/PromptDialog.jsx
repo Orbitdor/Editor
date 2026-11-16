@@ -37,8 +37,10 @@ export default function PromptDialog({
 
   function submit(event) {
     event.preventDefault();
-    onConfirm(inputRef.current?.value.trim() ?? "");
-    onOpenChange(false);
+    // A handler can return `false` to reject the value and keep the dialog
+    // open (for example an invalid URL), so the user does not lose their input.
+    const result = onConfirm(inputRef.current?.value.trim() ?? "");
+    if (result !== false) onOpenChange(false);
   }
 
   return (

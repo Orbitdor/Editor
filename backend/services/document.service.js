@@ -15,6 +15,33 @@ import { roleAtLeast } from "../models/WorkspaceMember.model.js";
 import * as audit from "./audit.service.js";
 import { describeLimitBreach, planFor } from "../config/plans.js";
 import { purgeDocument as purgeAttachments } from "./attachment.service.js";
+import { cacheConfig } from "../config/cache.js";
+import { cacheDel, cacheDelPrefix, cacheKey, getOrSet } from "./cache.service.js";
+
+/**
+ * Drop every cached view of a document after a write.
+ *
+ * Two families of key are affected:
+ *   - `doc:body:<id>`  the single-document read used when opening the editor;
+ *   - `docs:...`       the dashboard lists.
+ *
+ * Lists are namespaced by workspace when one is given (every member of a
+ * workspace sees the same list, so one entry serves them all) and by user for
+ * the personal view. Clearing by prefix reaches every scope, folder, tag and
+ * search variant in one go, which is why the variants are stored under a common
+ * prefix rather than as flat keys.
+ *
+ * @param {{docId?: string|null, workspaceId?: string|null, ownerIds?: string[]}} params
+ */
+function invalidateDocumentCaches({ docId = null, workspaceId = null, ownerIds = [] } = {}) {
+  const jobs = [];
+  if (docId) jobs.push(cacheDel(cacheKey("doc:body", docId)));
+  if (workspaceId) jobs.push(cacheDelPrefix(`${cacheKey("docs", "ws", workspaceId)}:`));
+  for (const id of new Set(ownerIds.map(String))) {
+    jobs.push(cacheDelPrefix(`${cacheKey("docs", "user", id)}:`));
+  }
+  return Promise.all(jobs);
+}
 
 /**
  * List the caller's own documents.
@@ -27,7 +54,9 @@ export async function listDocuments(
   { scope = "all", q = "", tags = [], workspaceId = null, folderId = null, unfiled = false } = {}
 ) {
   // Without a workspace this lists the caller's own documents, which is what the
-  // personal dashboard has always shown.
+  // personal dashboard has always shown. Resolving a workspace also authorises
+  // the caller, and that check deliberately stays *outside* the cached loader:
+  // a removed member must be refused even when a warm cache still has the list.
   const filter = workspaceId ? await workspaceFilter(userId, workspaceId) : { owner: userId };
 
   if (scope === "trash") filter.trashedAt = { $ne: null };
@@ -51,7 +80,23 @@ export async function listDocuments(
     filter.$or = [{ title: rx }, { plainText: rx }];
   }
 
-  return Document.find(filter).sort("-updatedAt").limit(200);
+  // A workspace list is identical for every member, so it is cached once under
+  // the workspace; the personal list is cached under the user.
+  const key = workspaceId
+    ? cacheKey("docs", "ws", workspaceId, scope, folderId, unfiled, [...tags].sort().join(","), q)
+    : cacheKey("docs", "user", userId, scope, folderId, unfiled, [...tags].sort().join(","), q);
+
+  return getOrSet(key, cacheConfig().ttl.documents, async () =>
+    Document.find(filter)
+      // `contentJson` and `collabSync` are the two heaviest fields and the
+      // dashboard never renders them; `linkShare.token` is the public-link
+      // credential the model would normally strip, so it is excluded here too
+      // because a lean query bypasses that transform.
+      .select("-contentJson -collabSync -linkShare")
+      .sort("-updatedAt")
+      .limit(200)
+      .lean()
+  );
 }
 
 /**
@@ -69,16 +114,17 @@ async function workspaceFilter(userId, workspaceId) {
  *
  * The response carries `access` so the client knows whether to allow editing,
  * commenting or sharing without a second round-trip.
+ *
+ * The body is read through the cache: content is identical for everyone who can
+ * see it, so it is stored once per document and the per-user `access` block is
+ * layered on top after the role is resolved.
  */
 export async function getDocument(id, userId) {
-  const { doc, role } = await authorize(id, userId, "viewer");
+  const { doc, role } = await authorize(id, userId, "viewer", { fromCache: true });
 
-  if (!doc.trashedAt) {
-    doc.lastOpenedAt = new Date();
-    await doc.save({ validateModifiedOnly: true });
-  }
+  if (!doc.trashedAt) touchLastOpened(id, doc.lastOpenedAt);
 
-  const plain = doc.toObject();
+  const plain = { ...doc };
   plain.access = {
     role,
     canEdit: canAccess(role, "editor"),
@@ -86,6 +132,20 @@ export async function getDocument(id, userId) {
     canShare: role === "owner",
   };
   return plain;
+}
+
+/**
+ * Note that the document was opened, without making the caller wait for it.
+ *
+ * This used to be an awaited `doc.save()` on every single GET, so opening a
+ * document always cost a MongoDB write on top of the read -- for a timestamp
+ * nobody waits for. It is fire-and-forget now, and only written when the stored
+ * value is more than a minute old, so a reload pays nothing for it.
+ */
+function touchLastOpened(id, lastOpenedAt) {
+  const last = lastOpenedAt ? new Date(lastOpenedAt).getTime() : 0;
+  if (Date.now() - last < 60_000) return;
+  Document.updateOne({ _id: id }, { $set: { lastOpenedAt: new Date() } }).catch(() => null);
 }
 
 export async function createDocument(userId, { title, workspaceId, folderId = null } = {}) {
@@ -145,6 +205,9 @@ export async function createDocument(userId, { title, workspaceId, folderId = nu
 
   await refreshStats(workspace._id);
   await recordDoc(workspace._id, userId, "document.created", doc, { workspace: workspace.name });
+  // The new document belongs in every list of that workspace, including the
+  // personal one, so drop both families before the caller is handed back.
+  await invalidateDocumentCaches({ workspaceId: workspace._id, ownerIds: [userId] });
   return doc;
 }
 
@@ -195,6 +258,14 @@ export async function updateDocument(id, userId, patch) {
       title: titleChanged || undefined,
       content: contentChanged || jsonChanged || undefined,
     });
+    // The editor and both people's dashboards have to see the new content. An
+    // editor who is not the owner has their own list key, so both ids are
+    // cleared rather than assuming the writer owns the document.
+    await invalidateDocumentCaches({
+      docId: doc._id,
+      workspaceId: doc.workspace,
+      ownerIds: [doc.owner, userId],
+    });
   }
   return doc;
 }
@@ -205,6 +276,11 @@ export async function trashDocument(id, userId) {
     doc.trashedAt = new Date();
     await doc.save({ validateModifiedOnly: true });
     await recordDoc(doc.workspace, userId, "document.trashed", doc);
+    await invalidateDocumentCaches({
+      docId: doc._id,
+      workspaceId: doc.workspace,
+      ownerIds: [doc.owner, userId],
+    });
   }
   return doc;
 }
@@ -215,6 +291,11 @@ export async function restoreDocument(id, userId) {
     doc.trashedAt = null;
     await doc.save({ validateModifiedOnly: true });
     await recordDoc(doc.workspace, userId, "document.restored", doc);
+    await invalidateDocumentCaches({
+      docId: doc._id,
+      workspaceId: doc.workspace,
+      ownerIds: [doc.owner, userId],
+    });
   }
   return doc;
 }
@@ -241,6 +322,7 @@ export async function deleteDocument(id, userId) {
   // Count the deletion, then fix the cached workspace totals it invalidated.
   await recordDoc(workspace, userId, "document.deleted", { _id: id, title: doc.title });
   await refreshStats(workspace).catch(() => null);
+  await invalidateDocumentCaches({ docId: id, workspaceId: workspace, ownerIds: [doc.owner, userId] });
   return { ok: true, attachments: attachments.removed };
 }
 
@@ -248,6 +330,11 @@ export async function starDocument(id, userId, starred) {
   const doc = await authorizeOwner(id, userId);
   doc.starred = Boolean(starred);
   await doc.save({ validateModifiedOnly: true });
+  await invalidateDocumentCaches({
+    docId: doc._id,
+    workspaceId: doc.workspace,
+    ownerIds: [doc.owner, userId],
+  });
   return doc;
 }
 
@@ -255,6 +342,11 @@ export async function setTags(id, userId, tags) {
   const doc = await authorizeOwner(id, userId);
   doc.tags = [...new Set((tags || []).map((t) => String(t).trim()).filter(Boolean))].slice(0, 20);
   await doc.save({ validateModifiedOnly: true });
+  await invalidateDocumentCaches({
+    docId: doc._id,
+    workspaceId: doc.workspace,
+    ownerIds: [doc.owner, userId],
+  });
   return doc;
 }
 

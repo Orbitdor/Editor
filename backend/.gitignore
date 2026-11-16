@@ -1,2 +1,8 @@
 node_modules
 .env
+
+# Downloaded Tesseract language models (regenerated automatically on first OCR).
+.tesseract-cache
+
+# Downloaded PP-OCR ONNX models (regenerated automatically on first OCR).
+.paddle-cache

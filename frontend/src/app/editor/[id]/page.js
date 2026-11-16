@@ -44,7 +44,6 @@ import AiPanel from "@/components/AiPanel";
 import VoicePanel from "@/components/VoicePanel";
 import OcrDialog from "@/components/OcrDialog";
 import IntegrationCenter, { IntegrationCenterButton } from "@/components/integration-center";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -135,6 +134,7 @@ export default function Editor() {
   const [mode, setMode] = useState("editing");
   const [indentLeft, setIndentLeft] = useState(56);
   const [indentTop, setIndentTop] = useState(48);
+  const [showRulers, setShowRulers] = useState(true);
   const [saveState, setSaveState] = useState("saved");
   const savingRef = useRef(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
@@ -203,7 +203,10 @@ export default function Editor() {
       mentionRender: getMentionRenderer(),
     }),
     content: "",
-    editable: !viewOnly,
+    // The table extension only installs its column-resize plugin when the
+    // editor is editable at creation time. Access has not resolved yet, so start
+    // editable and let the effect below lock read-only sessions immediately.
+    editable: true,
     editorProps: {
       attributes: {
         class: "outline-none min-h-[55vh]",
@@ -1018,32 +1021,40 @@ export default function Editor() {
           onInsertPageBreak={insertPageBreak}
           commentsOpen={commentsOpen}
           setCommentsOpen={setCommentsOpen}
+          showRulers={showRulers}
+          onToggleRulers={() => setShowRulers((v) => !v)}
           // Attachments are scoped to the document, so the upload buttons need
           // its id.
           documentId={id}
-          // Commenters and viewers can never enter edit mode.
-          canEdit={access.canEdit}
+          // Commenters and viewers can never enter edit mode. `null` until the
+          // document (and with it the caller's role) has resolved, so the
+          // toolbar shows neither the mode toggle nor a premature badge.
+          canEdit={loaded ? access.canEdit : null}
+          canComment={access.canComment}
         />
       </div>
 
-      {loaded ? (
-        <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden">
           <div className="editor-canvas relative flex-1 overflow-auto bg-[#e8eaed] px-4 py-10">
-            <div className="print-hide absolute left-0 top-[120px] z-10 w-[18px]">
-              <LeftRuler
-                height={PAGE_H}
-                indentTop={indentTop}
-                onIndentTop={setIndentTop}
-              />
-            </div>
-            <div className="mx-auto w-fit">
-              <div className="print-hide pb-2">
-                <TopRuler
-                  width={PAGE_W}
-                  indentLeft={indentLeft}
-                  onIndentLeft={setIndentLeft}
+            {showRulers ? (
+              <div className="print-hide absolute left-0 top-[120px] z-10 w-[18px]">
+                <LeftRuler
+                  height={PAGE_H}
+                  indentTop={indentTop}
+                  onIndentTop={setIndentTop}
                 />
               </div>
+            ) : null}
+            <div className="mx-auto w-fit">
+              {showRulers ? (
+                <div className="print-hide pb-2">
+                  <TopRuler
+                    width={PAGE_W}
+                    indentLeft={indentLeft}
+                    onIndentLeft={setIndentLeft}
+                  />
+                </div>
+              ) : null}
               <div
                 className="paper relative w-[794px] border border-zinc-200 bg-white shadow-sm"
                 style={{
@@ -1192,27 +1203,6 @@ export default function Editor() {
             </div>
           ) : null}
         </div>
-      ) : (        <div className="editor-canvas flex flex-1 flex-col items-center overflow-auto bg-[#e8eaed] px-4 py-10">
-          <div className="mx-auto w-full max-w-[840px]">
-            <Skeleton className="h-9 w-full rounded-sm bg-white/70" />
-            <div className="flex flex-col items-center rounded-lg border border-zinc-200 bg-white p-10 shadow-sm">
-              <Skeleton className="w-64 max-w-full" />
-              <Skeleton className="mt-2 w-40 max-w-full" />
-              <div className="mt-10 grid w-full gap-3">
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-4 w-3/4" />
-                <Skeleton className="mt-6 h-4 w-full" />
-                <Skeleton className="h-4 w-5/6" />
-              </div>
-            </div>
-          <div className="mt-4 flex items-center justify-center gap-2 text-sm text-zinc-400">
-            <Loader2 className="size-4 animate-spin" />
-            Loading document...
-          </div>
-          </div>
-        </div>
-      )}
 
       {/* Mobile action bar (master plan section 42).
           The header row of glyphs does not fit a phone, so voice, AI, OCR and

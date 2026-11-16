@@ -9,6 +9,16 @@ import { getSocketToken } from "./api.js";
 export const NOTIFICATIONS_REALTIME = Boolean(NOTIFY_WS_BASE);
 
 /**
+ * How long a connection must stay open before its retry backoff is cleared.
+ *
+ * A serverless host recycles the function behind a long-lived socket, so the
+ * connection drops and reconnects repeatedly. Resetting the backoff the instant
+ * the socket opens turns that into a tight "connect, drop, retry in 2s" loop;
+ * only a connection that survives this long earns a fresh backoff.
+ */
+const STABLE_MS = 20_000;
+
+/**
  * Subscribe to the per-user notification channel.
  *
  * The server pushes a small event whenever something new lands for the signed-in
@@ -39,6 +49,8 @@ export function subscribeNotifications(onEvent) {
     retryTimer = setTimeout(connect, delay);
   }
 
+  let stableTimer;
+
   async function connect() {
     if (stopped) return;
 
@@ -64,7 +76,12 @@ export function subscribeNotifications(onEvent) {
     }
 
     socket.onopen = () => {
-      retries = 0;
+      // Do not reset the backoff immediately: see STABLE_MS. A connection that
+      // is recycled right after opening keeps escalating the retry delay.
+      clearTimeout(stableTimer);
+      stableTimer = setTimeout(() => {
+        retries = 0;
+      }, STABLE_MS);
     };
     socket.onmessage = (event) => {
       try {
@@ -77,6 +94,7 @@ export function subscribeNotifications(onEvent) {
       }
     };
     socket.onclose = () => {
+      clearTimeout(stableTimer);
       if (!stopped) schedule();
     };
     socket.onerror = () => {
@@ -93,6 +111,7 @@ export function subscribeNotifications(onEvent) {
   return () => {
     stopped = true;
     clearTimeout(retryTimer);
+    clearTimeout(stableTimer);
     try {
       socket?.close();
     } catch {

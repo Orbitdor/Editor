@@ -86,16 +86,41 @@ export function aiConfig() {
 }
 
 /**
- * OCR needs to send the raw image to a vision model. When no key is present the
- * upload endpoint reports that OCR is unavailable instead of failing deep
- * inside the provider call.
+ * OCR engine selection.
+ *
+ * Default is `local`: a bundled Tesseract engine that needs no API key, so
+ * image-to-text works out of the box. `openai` keeps the older vision-model
+ * path for anyone who already relies on it; `google` routes a single request
+ * through the caller's own Google Cloud Vision connection.
+ */
+export function ocrEngine() {
+  const value = (pick("OCR_PROVIDER") || "local").toLowerCase();
+  return value === "tesseract" ? "local" : value;
+}
+
+/**
+ * Which OCR engine a single request should use.
+ *
+ * @param {string} [requested] a per-request override from the client
+ * @returns {"local"|"google"|"openai"}
+ */
+export function resolveOcrEngine(requested) {
+  const value = String(requested || "").toLowerCase();
+  if (value === "google") return "google";
+  if (value === "openai") return "openai";
+  if (value === "local" || value === "tesseract") return "local";
+  return ocrEngine();
+}
+
+/**
+ * OCR uploads arrive as base64 inside the JSON body, so the image is capped
+ * independently of the model configuration (which may not exist at all when the
+ * local engine is used).
  */
 export function ocrConfig() {
   const cfg = aiConfig();
   return {
     ...cfg,
-    // Uploads are capped independently of the JSON body limit because images
-    // arrive as base64 inside the OCR payload.
     maxImageBytes: Number(pick("OCR_MAX_IMAGE_BYTES")) || 5 * 1024 * 1024,
     maxImageChars: Math.ceil((Number(pick("OCR_MAX_IMAGE_BYTES")) || 5 * 1024 * 1024) * 1.4),
   };
@@ -125,6 +150,8 @@ export function providerStatus() {
   const cfg = aiConfig();
   return {
     provider: cfg.provider,
+    // OCR runs locally by default and does not depend on an AI key.
+    ocrEngine: ocrEngine(),
     configured: isConfigured(cfg),
     mock: !isConfigured(cfg) && cfg.allowMock,
     model: cfg.chatModel,

@@ -46,8 +46,20 @@ export const ask = async (req, res) => {
 
 // POST /api/v1/ocr/:id -> extract text from a base64 image
 export const runOcr = async (req, res) => {
-const { image, language, provider } = req.body || {};
-    res.json(await ocrService.runOcr(req.params.id, req.user.id, { image, language, provider }));
+  const { image, language, provider, progressId } = req.body || {};
+  res.json(
+    await ocrService.runOcr(req.params.id, req.user.id, {
+      image,
+      language,
+      provider,
+      progressId,
+    })
+  );
+};
+
+// GET /api/v1/ocr/:id/progress/:progressId -> live progress for a running extraction
+export const getOcrProgress = async (req, res) => {
+  res.json(ocrService.getOcrProgress(req.params.progressId, req.user.id));
 };
 
 // GET /api/v1/ocr/:id -> recent OCR jobs

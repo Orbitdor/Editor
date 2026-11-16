@@ -18,6 +18,13 @@ import { cn } from "@/lib/utils";
  */
 const POLL_MS = NOTIFICATIONS_REALTIME ? 10 * 60_000 : 60_000;
 
+/**
+ * Minimum spacing between socket-driven resyncs. A reconnect resync is a safety
+ * net, and a host that recycles long-lived sockets can reconnect often, so the
+ * feed is not refetched more than once per this window.
+ */
+const RESYNC_MIN_MS = 10_000;
+
 /** Icon-free label per notification type. */
 const TYPE_LABEL = {
   mention: "Mention",
@@ -51,8 +58,17 @@ export default function NotificationBell() {
   const [unread, setUnread] = useState(0);
   const [loading, setLoading] = useState(false);
   const ref = useRef(null);
+  const lastLoadRef = useRef(0);
+  const inflightRef = useRef(false);
 
   const load = useCallback(async () => {
+    // Stamp the time up front and refuse to overlap: a reconnect "ready" that
+    // lands while the initial fetch is still in flight would otherwise slip past
+    // the throttle (lastLoadRef is not set until the fetch resolves) and fire a
+    // second, redundant request.
+    if (inflightRef.current) return;
+    inflightRef.current = true;
+    lastLoadRef.current = Date.now();
     try {
       setLoading(true);
       const data = await getNotifications(30);
@@ -61,9 +77,24 @@ export default function NotificationBell() {
     } catch {
       // Silent: a failed poll should not disturb editing.
     } finally {
+      inflightRef.current = false;
       setLoading(false);
     }
   }, []);
+
+  // A "notification" push is rare and worth an immediate fetch. A "ready" is sent
+  // on every (re)connect, so it is only a resync safety net and is throttled:
+  // a host that recycles the socket would otherwise fetch once per reconnect.
+  const onSocketEvent = useCallback(
+    (message) => {
+      if (message?.type === "ready") {
+        if (Date.now() - lastLoadRef.current >= RESYNC_MIN_MS) load();
+        return;
+      }
+      load();
+    },
+    [load]
+  );
 
   // Initial load, then push updates over the socket. Without a socket the slow
   // interval plus focus/visibility listeners are the only refresh. With one, those
@@ -72,7 +103,7 @@ export default function NotificationBell() {
   useEffect(() => {
     const kickoff = setTimeout(load, 0);
 
-    const unsubscribe = subscribeNotifications(() => load());
+    const unsubscribe = subscribeNotifications(onSocketEvent);
 
     const timer = setInterval(() => {
       if (document.visibilityState === "visible") load();
@@ -93,7 +124,7 @@ export default function NotificationBell() {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };
-  }, [load]);
+  }, [load, onSocketEvent]);
 
   // Close on outside click.
   useEffect(() => {

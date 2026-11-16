@@ -6,6 +6,20 @@ import { roleAtLeast } from "../models/WorkspaceMember.model.js";
 import { memberRole, refreshStats, resolveWorkspace } from "./workspace.service.js";
 import { authorizeEdit } from "./access.service.js";
 import * as audit from "./audit.service.js";
+import { cacheConfig } from "../config/cache.js";
+import { cacheDel, cacheDelPrefix, cacheKey, getOrSet } from "./cache.service.js";
+
+/**
+ * Drop the cached folder tree for a workspace.
+ *
+ * The tree is workspace-scoped rather than user-scoped: every member sees the
+ * same folders, so one entry serves them all and any folder change invalidates
+ * it for everyone at once.
+ */
+function invalidateFolderCaches(workspaceId) {
+  if (!workspaceId) return Promise.resolve();
+  return cacheDel(cacheKey("folders", workspaceId));
+}
 
 /**
  * Folders (master plan section 11).
@@ -42,21 +56,26 @@ async function authorizeFolderSpace(userId, workspaceId, minimum) {
  * first, then each folder's children.
  */
 export async function listFolders(userId, { workspaceId = null } = {}) {
+  // Authorization runs on every request, before the cache is consulted, so a
+  // member who was just removed cannot keep reading a warm tree.
   const workspace = await authorizeFolderSpace(userId, workspaceId, "viewer");
-  const folders = await Folder.find({ workspace: workspace._id, trashedAt: null })
-    .sort({ order: 1, name: 1 })
-    .lean();
 
-  const byId = new Map(folders.map((f) => [String(f._id), { ...f, children: [] }]));
-  const roots = [];
-  for (const folder of byId.values()) {
-    const parent = folder.parent ? byId.get(String(folder.parent)) : null;
-    // A folder whose parent was trashed or filtered out is promoted to the top
-    // level rather than disappearing from the tree.
-    if (parent) parent.children.push(folder);
-    else roots.push(folder);
-  }
-  return roots;
+  return getOrSet(cacheKey("folders", workspace._id), cacheConfig().ttl.folders, async () => {
+    const folders = await Folder.find({ workspace: workspace._id, trashedAt: null })
+      .sort({ order: 1, name: 1 })
+      .lean();
+
+    const byId = new Map(folders.map((f) => [String(f._id), { ...f, children: [] }]));
+    const roots = [];
+    for (const folder of byId.values()) {
+      const parent = folder.parent ? byId.get(String(folder.parent)) : null;
+      // A folder whose parent was trashed or filtered out is promoted to the top
+      // level rather than disappearing from the tree.
+      if (parent) parent.children.push(folder);
+      else roots.push(folder);
+    }
+    return roots;
+  });
 }
 
 export async function listTrashedFolders(userId, { workspaceId = null } = {}) {
@@ -125,6 +144,7 @@ export async function createFolder(userId, { name, workspaceId = null, parent = 
     actor: { id: userId },
     resource: { type: "folder", id: folder._id, name: folder.name },
   });
+  await invalidateFolderCaches(workspace._id);
   return folder;
 }
 
@@ -184,6 +204,7 @@ export async function updateFolder(userId, folderId, patch = {}) {
     resource: { type: "folder", id: folder._id, name: folder.name },
     meta: { name: patch.name !== undefined, moved: patch.parent !== undefined },
   });
+  await invalidateFolderCaches(folder.workspace);
   return folder;
 }
 
@@ -233,6 +254,7 @@ export async function trashFolder(userId, folderId) {
     resource: { type: "folder", id: folder._id, name: folder.name },
     meta: { children: children.length },
   });
+  await invalidateFolderCaches(folder.workspace);
   return folder;
 }
 
@@ -243,6 +265,7 @@ export async function restoreFolder(userId, folderId) {
   if (!folder.trashedAt) return folder;
   folder.trashedAt = null;
   await folder.save({ validateModifiedOnly: true });
+  await invalidateFolderCaches(folder.workspace);
   return folder;
 }
 
@@ -262,6 +285,7 @@ export async function deleteFolder(userId, folderId) {
     actor: { id: userId },
     resource: { type: "folder", id: folder._id, name: folder.name },
   });
+  await invalidateFolderCaches(folder.workspace);
   return { deleted: true };
 }
 
@@ -286,6 +310,17 @@ export async function moveDocument(userId, docId, folderId) {
     resource: { type: "document", id: doc._id, name: doc.title },
     meta: { folder: folderId || null },
   });
+
+  // Filing a document changes which list it appears in -- the folder's own list
+  // and the "unfiled" root -- so both the document's cached body and every list
+  // that could contain it are dropped. The folder *tree* is unaffected, because
+  // moving a document does not change the folders themselves.
+  await Promise.all([
+    cacheDel(cacheKey("doc:body", doc._id)),
+    cacheDelPrefix(`${cacheKey("docs", "ws", doc.workspace)}:`),
+    cacheDelPrefix(`${cacheKey("docs", "user", doc.owner)}:`),
+    cacheDelPrefix(`${cacheKey("docs", "user", userId)}:`),
+  ]);
   return doc;
 }
 

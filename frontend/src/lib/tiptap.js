@@ -47,14 +47,43 @@ export const LINE_HEIGHTS = ["1", "1.15", "1.5", "1.75", "2", "2.5", "3"];
 export const COLORS = [
   { name: "Default", value: undefined },
   { name: "Black", value: "#000000" },
+  { name: "Charcoal", value: "#27272a" },
   { name: "Dark gray", value: "#52525b" },
   { name: "Gray", value: "#71717a" },
   { name: "Red", value: "#dc2626" },
+  { name: "Rose", value: "#e11d48" },
   { name: "Orange", value: "#ea580c" },
+  { name: "Amber", value: "#d97706" },
   { name: "Yellow", value: "#ca8a04" },
+  { name: "Lime", value: "#65a30d" },
   { name: "Green", value: "#16a34a" },
+  { name: "Emerald", value: "#059669" },
+  { name: "Teal", value: "#0d9488" },
+  { name: "Cyan", value: "#0891b2" },
   { name: "Blue", value: "#2563eb" },
+  { name: "Indigo", value: "#4f46e5" },
+  { name: "Violet", value: "#7c3aed" },
   { name: "Purple", value: "#9333ea" },
+  { name: "Pink", value: "#db2777" },
+];
+
+/** Light tints for the highlighter; dark text stays readable on every swatch. */
+export const HIGHLIGHT_COLORS = [
+  { name: "No highlight", value: undefined },
+  { name: "Yellow", value: "#fef08a" },
+  { name: "Amber", value: "#fde68a" },
+  { name: "Orange", value: "#fed7aa" },
+  { name: "Red", value: "#fecaca" },
+  { name: "Rose", value: "#fecdd3" },
+  { name: "Pink", value: "#fbcfe8" },
+  { name: "Purple", value: "#e9d5ff" },
+  { name: "Indigo", value: "#c7d2fe" },
+  { name: "Blue", value: "#bfdbfe" },
+  { name: "Cyan", value: "#a5f3fc" },
+  { name: "Teal", value: "#99f6e4" },
+  { name: "Green", value: "#bbf7d0" },
+  { name: "Lime", value: "#d9f99d" },
+  { name: "Gray", value: "#e4e4e7" },
 ];
 
 const PageBreak = Node.create({
@@ -90,6 +119,9 @@ const CommentHighlight = Mark.create({
   name: "commentHighlight",
   inclusive: false,
   excludes: "",
+  // A comment anchor is semantic, not cosmetic: "Clear formatting" must not
+  // silently detach a thread from the text it was written about.
+  clearable: false,
 
   addAttributes() {
     return {
@@ -200,13 +232,19 @@ export function buildExtensions({
       heading: { levels: [1, 2, 3, 4, 5, 6] },
       link: false,
       underline: false,
+      // The Yjs undo manager owns history once Collaboration is enabled.
+      // Leaving StarterKit's local history in place makes Ctrl+Z diverge
+      // between collaborators instead of undoing shared changes.
+      undoRedo: ydoc ? false : {},
     }),
     Underline,
     TextStyle,
     Color,
     FontFamily,
     FontSize,
-    LineHeight.configure({ types: ["heading", "paragraph", "blockquote"] }),
+    // Line height is a textStyle mark attribute; configuring node types here
+    // would add the attribute to the wrong schema and silently drop the command.
+    LineHeight,
     Highlight.configure({ multicolor: true }),
     TextAlign.configure({ types: ["heading", "paragraph", "blockquote"] }),
     Link.configure({
@@ -214,9 +252,13 @@ export function buildExtensions({
       autolink: true,
       linkOnPaste: true,
       defaultProtocol: "https",
+      HTMLAttributes: {
+        rel: "noopener noreferrer nofollow",
+        target: "_blank",
+      },
     }),
     Image.configure({ allowBase64: false }),
-    Table.configure({ resizable: true }),
+    Table.configure({ resizable: true, lastColumnResizable: true }),
     TableRow,
     TableCell,
     TableHeader,

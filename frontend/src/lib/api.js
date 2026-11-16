@@ -654,13 +654,21 @@ export function askAboutDocument(id, question, language = "en") {
   });
 }
 
-// POST /documents/:id/ocr -> extract text from a base64 image
-export function runOcr(id, image, language = "auto") {
+// POST /documents/:id/ocr -> extract text from a base64 image.
+// Passing `progressId` lets the caller poll extraction progress while it runs.
+export function runOcr(id, image, language = "auto", progressId) {
+  const body = { image, language };
+  if (progressId) body.progressId = progressId;
   return request(`${BASE}/${id}/ocr`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ image, language }),
+    body: JSON.stringify(body),
   });
+}
+
+// GET /documents/:id/ocr/progress/:progressId -> live progress (0-100) of an extraction
+export function getOcrProgress(id, progressId) {
+  return request(`${BASE}/${id}/ocr/progress/${encodeURIComponent(progressId)}`);
 }
 
 // GET /documents/:id/ocr -> recent OCR jobs
@@ -872,6 +880,59 @@ export function fileToDataUrl(file, { maxEdge = 2000, quality = 0.9 } = {}) {
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0, width, height);
         resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Prepare a picked image for OCR.
+ *
+ * The heavy lifting (straightening, lighting, thresholding) happens on the
+ * server, so the browser only does what it must: keep the upload small and
+ * keep the pixels intact.
+ *
+ *   - the picture is scaled so the longest edge is at most `maxEdge`; a larger
+ *     picture only costs upload time, the engine works on a fixed scale,
+ *   - it is sent as a PNG when that stays small enough, so no compression
+ *     artefact can blur the edges of the letters, and as a JPEG otherwise.
+ *
+ * @param {File} file
+ * @param {{maxEdge?: number, quality?: number}} opts
+ * @returns {Promise<string>} the image as a data URL
+ */
+export function imageToOcrDataUrl(file, { maxEdge = 2400, quality = 0.95 } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type?.startsWith("image/")) {
+      reject(new Error("Please choose an image file"));
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read that file"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("That image could not be decoded"));
+      img.onload = () => {
+        const longest = Math.max(img.width, img.height);
+        const scale = longest > maxEdge ? maxEdge / longest : 1;
+        const width = Math.max(1, Math.round(img.width * scale));
+        const height = Math.max(1, Math.round(img.height * scale));
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // A lossless PNG keeps every letter edge, which is what the engine
+        // reads best, but a big photo would make the upload enormous.
+        const png = canvas.toDataURL("image/png");
+        resolve(png.length <= 4_500_000 ? png : canvas.toDataURL("image/jpeg", quality));
       };
       img.src = reader.result;
     };

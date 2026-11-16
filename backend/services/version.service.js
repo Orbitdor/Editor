@@ -1,6 +1,7 @@
 import DocumentVersion from "../models/DocumentVersion.model.js";
 import { ApiError } from "../utils/ApiError.js";
 import { authorize, authorizeEdit } from "./access.service.js";
+import { cacheDel, cacheDelPrefix, cacheKey } from "./cache.service.js";
 
 const MAX_VERSIONS_PER_DOC = 50;
 
@@ -51,5 +52,14 @@ export async function restoreVersion(documentId, userId, version) {
   doc.contentJson = v.contentJson;
   doc.version += 1;
   await doc.save();
+
+  // A restore rewrites the body, so the single-document read and every dashboard
+  // list that shows this document have to be dropped together.
+  await Promise.all([
+    cacheDel(cacheKey("doc:body", documentId)),
+    cacheDelPrefix(`${cacheKey("docs", "ws", doc.workspace)}:`),
+    cacheDelPrefix(`${cacheKey("docs", "user", doc.owner)}:`),
+    cacheDelPrefix(`${cacheKey("docs", "user", userId)}:`),
+  ]);
   return doc;
 }

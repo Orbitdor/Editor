@@ -4,6 +4,7 @@ import cors from "cors";
 import mongoose from "mongoose";
 import v1Router from "./routes/v1/index.js";
 import { connectDB, getDBError } from "./config/db.js";
+import { cacheStatus } from "./services/cache.service.js";
 import { notFound, errorHandler, securityHeaders } from "./middleware/error.middleware.js";
 
 const app = express();
@@ -65,6 +66,9 @@ app.get("/api/health", async (_req, res) => {
     readyState: mongoose.connection.readyState,
     mongoUriSet: !!process.env.MONGO_URI,
     detail: ok ? null : getDBError(),
+    // The cache is optional, so its health never decides the status code: a
+    // Redis outage leaves `mode` on "memory" and the API serving normally.
+    cache: cacheStatus(),
   });
 });
 

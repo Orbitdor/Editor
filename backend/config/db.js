@@ -19,8 +19,10 @@ export const connectDB = async () => {
       .connect(process.env.MONGO_URI, {
         // The hosted cluster idles connections out, so allow the driver time to
         // pick a server again instead of failing the first request it wakes up.
-        serverSelectionTimeoutMS: 15000,
-        connectTimeoutMS: 15000,
+        // A paused free-tier cluster can take longer than 15s to accept the
+        // first connection, so the ceiling is generous.
+        serverSelectionTimeoutMS: 30000,
+        connectTimeoutMS: 30000,
         maxPoolSize: 20,
         minPoolSize: 2,
         // Retry transient topology errors rather than surfacing them to callers.
@@ -28,9 +30,14 @@ export const connectDB = async () => {
         retryWrites: true,
       })
       .then(() => true)
-      .catch((err) => {
+      .catch(async (err) => {
         lastError = err.message;
         cached = null;
+        // A failed attempt can leave a half-open connection behind. Tear it
+        // down so the next request starts clean instead of reusing a dead
+        // socket, which is what lets the API recover from a transient DNS or
+        // network blip without a full restart.
+        await mongoose.disconnect().catch(() => {});
         return false;
       });
   }

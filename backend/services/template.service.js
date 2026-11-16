@@ -9,6 +9,20 @@ import { createDocument, updateDocument } from "./document.service.js";
 import * as provider from "./ai.provider.js";
 import * as usage from "./usage.service.js";
 import { BUILT_IN_TEMPLATES, SMART_CATEGORIES } from "../config/templates.js";
+import { cacheConfig } from "../config/cache.js";
+import { cacheDelPrefix, cacheKey, getOrSet } from "./cache.service.js";
+
+/**
+ * Drop every cached template view.
+ *
+ * Template changes are rare (someone edits the shared library), so the simplest
+ * correct move is to clear the whole family rather than track each browse
+ * variant. It also covers the cached seed count, which a new built-in makes
+ * wrong the moment it ships.
+ */
+function invalidateTemplateCaches() {
+  return cacheDelPrefix(cacheKey("templates"));
+}
 
 /**
  * Templates (master plan sections 32 and 33).
@@ -61,9 +75,15 @@ async function authorizeTemplateSpace(userId, workspaceId, minimum) {
 export async function ensureBuiltIns({ force = false } = {}) {
   // `listTemplates` calls this on every browse, so the cheap check comes first:
   // counting first avoids a twelve-document bulkWrite on the common path, where
-  // the library is already seeded.
+  // the library is already seeded. The count is cached too, so a warm browse
+  // does not touch MongoDB at all.
   if (!force) {
-    const seeded = await Template.countDocuments({ builtIn: true });
+    const seeded = await getOrSet(cacheKey("templates", "seeded"), cacheConfig().ttl.templates, () =>
+      Template.countDocuments({ builtIn: true })
+    );
+    // Comparing against the shipped length rather than trusting the count is
+    // what makes a deploy that adds a built-in re-seed: the cached number is
+    // one short, so this falls through to the write below.
     if (seeded >= BUILT_IN_TEMPLATES.length) return seeded;
   }
 
@@ -75,6 +95,8 @@ export async function ensureBuiltIns({ force = false } = {}) {
     },
   }));
   await Template.bulkWrite(ops, { ordered: false });
+  // The library changed, so every cached browse and the seed count are stale.
+  await invalidateTemplateCaches();
   return BUILT_IN_TEMPLATES.length;
 }
 
@@ -218,12 +240,16 @@ export async function listTemplates(userId, { category = null, q = null, workspa
     filter.$and = [{ $or: [{ title: rx }, { description: rx }, { tags: rx }] }];
   }
 
-  const templates = await Template.find(filter).sort({ builtIn: -1, useCount: -1, title: 1 }).lean();
-
-  return {
-    categories: TEMPLATE_CATEGORIES,
-    templates: templates.map((t) => describe(t)),
-  };
+  // The browse omits every body (see `describe`), so this is a small payload and
+  // a good candidate for a longer TTL than the rest of the cache.
+  const key = cacheKey("templates", userId, workspace?._id || "-", category || "-", q || "-");
+  return getOrSet(key, cacheConfig().ttl.templates, async () => {
+    const templates = await Template.find(filter).sort({ builtIn: -1, useCount: -1, title: 1 }).lean();
+    return {
+      categories: TEMPLATE_CATEGORIES,
+      templates: templates.map((t) => describe(t)),
+    };
+  });
 }
 
 /** One template with its body, for the preview and fill-in form. */
@@ -275,6 +301,7 @@ export async function saveFromDocument(
     tags: (Array.isArray(tags) ? tags : []).slice(0, 8).map((t) => String(t).slice(0, 40)),
   });
 
+  await invalidateTemplateCaches();
   return describe(template);
 }
 
@@ -305,6 +332,7 @@ export async function createTemplate(
     tags: (Array.isArray(tags) ? tags : []).slice(0, 8).map((t) => String(t).slice(0, 40)),
   });
 
+  await invalidateTemplateCaches();
   return describe(template);
 }
 
@@ -350,6 +378,7 @@ export async function updateTemplate(
   if (fields !== undefined) template.fields = sanitizeFields(fields);
 
   await template.save();
+  await invalidateTemplateCaches();
   return describe(template);
 }
 
@@ -361,6 +390,7 @@ export async function deleteTemplate(userId, templateId, { workspaceId = null } 
 
   await authorizeTemplateSpace(userId, workspaceId || template.workspace, "admin");
   await template.deleteOne();
+  await invalidateTemplateCaches();
 }
 
 /**
@@ -399,6 +429,11 @@ export async function instantiateTemplate(
   // Track popularity for the "most used" ordering. Failure here must not lose the
   // document the user just created, so the counter is best effort.
   await Template.updateOne({ _id: template._id }, { $inc: { useCount: 1 } }).catch(() => {});
+  // The counter is part of the browse ordering, so the cached list would show the
+  // pre-use order for its whole TTL. Drop it: a template use is rare enough that
+  // the rebuild is not worth avoiding, and the user who just used it sees the
+  // change immediately.
+  await invalidateTemplateCaches();
 
   const filled = await Document.findById(doc._id).lean();
   return {
@@ -482,6 +517,8 @@ export async function generateTemplate(userId, params = {}) {
     owner: userId,
     builtIn: false,
   });
+
+  await invalidateTemplateCaches();
 
   // The body is returned here as well, because the picker shows a preview of what
   // was just generated instead of making the client fetch it back.

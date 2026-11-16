@@ -4,8 +4,10 @@ import { authorize } from "./access.service.js";
 import * as provider from "./ai.provider.js";
 import * as usage from "./usage.service.js";
 import { detectLanguage, cleanOcrText, toBlocks, detectInvoiceFields } from "./ocr.process.js";
-import { LANGUAGES, ocrConfig, resolveProvider } from "../config/ai.js";
+import { LANGUAGES, ocrConfig, resolveOcrEngine } from "../config/ai.js";
 import { ocrWithGoogle } from "./google.ml.js";
+import { extractTextLocally } from "./ocr.local.js";
+import * as ocrProgress from "./ocr.progress.js";
 import { connectionHas, getConnection, withAccessToken } from "./google.oauth.js";
 
 /**
@@ -37,17 +39,24 @@ function decodedSize(dataUrl) {
   return Math.floor((base64.length * 3) / 4);
 }
 
+/** Turn a base64 data URL back into the bytes of the picture. */
+function decodeImage(dataUrl) {
+  const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+  return Buffer.from(base64, "base64");
+}
+
 /**
- * Pick which OCR backend to use.
+ * Pick which OCR engine to use.
  *
- * "google" routes through the caller's own Google connection, so their Google
- * project is billed instead of the app's. That is only possible when they have
- * connected Google with the vision scope; otherwise the request is rejected
- * rather than silently falling back, because silently using a different engine
- * would change both the cost and the result.
+ * The default is the bundled local engine, which needs no AI key. "google"
+ * routes through the caller's own Google connection, so their Google project is
+ * billed instead of the app's; that is only possible when they have connected
+ * Google with the vision scope, otherwise the request is rejected rather than
+ * silently falling back, because silently using a different engine would change
+ * both the cost and the result. "openai" is the legacy vision-model path.
  */
 async function resolveOcrProvider(userId, requested) {
-  const choice = resolveProvider(requested);
+  const choice = resolveOcrEngine(requested);
 
   if (choice === "google") {
     const connection = await getConnection(userId);
@@ -66,12 +75,22 @@ async function resolveOcrProvider(userId, requested) {
  *
  * @param {string} docId
  * @param {string} userId
- * @param {{image: string, language?: string, provider?: string}} params
+ * @param {{image: string, language?: string, provider?: string, progressId?: string}} params
+ *   `progressId` is an optional client-generated id used to poll live progress
  */
-export async function runOcr(docId, userId, { image, language = "auto", provider: requestedProvider } = {}) {
+export async function runOcr(
+  docId,
+  userId,
+  { image, language = "auto", provider: requestedProvider, progressId } = {}
+) {
   if (language && !LANGUAGES[language]) {
     throw new ApiError(400, `Unsupported language: ${language}`);
   }
+
+  // Registered up front so a poller that starts with the request sees 0% rather
+  // than a 404. A blank id (tests, API clients) makes every call below a no-op.
+  ocrProgress.start(progressId, userId);
+  const report = (percent, status) => ocrProgress.update(progressId, percent, status);
 
   const { doc } = await authorize(docId, userId, "commenter");
   if (doc.trashedAt) throw new ApiError(410, "Document is in trash");
@@ -94,10 +113,23 @@ export async function runOcr(docId, userId, { image, language = "auto", provider
 
   const startedAt = Date.now();
   try {
+    report(8, "reading image");
     const extracted =
       choice === "google"
         ? await ocrWithGoogle({ imageDataUrl: image, accessToken })
-        : await provider.extractTextFromImage({ imageDataUrl: image, language });
+        : choice === "local"
+          ? await extractTextLocally({
+              image: decodeImage(image),
+              language,
+              onProgress: ({ status, progress }) => {
+                // Engine progress (0..1) maps onto the 15..95 band, leaving the
+                // tail for the cleanup/language/block work done afterwards.
+                if (status === "preparing image") report(12, "preparing image");
+                else report(15 + progress * 80, "recognizing text");
+              },
+            })
+          : await provider.extractTextFromImage({ imageDataUrl: image, language });
+    report(96, "post-processing");
     const raw = extracted.text || "";
     const text = cleanOcrText(raw);
     const detected = language !== "auto" ? { code: language, confidence: 100 } : detectLanguage(text);
@@ -121,6 +153,8 @@ export async function runOcr(docId, userId, { image, language = "auto", provider
       workspace: doc.workspace,
     });
 
+    ocrProgress.finish(progressId, "done");
+
     return {
       jobId: String(job._id),
       text,
@@ -133,12 +167,20 @@ export async function runOcr(docId, userId, { image, language = "auto", provider
       durationMs: job.durationMs,
     };
   } catch (err) {
+    ocrProgress.finish(progressId, "failed");
     job.status = "failed";
     job.error = err.message;
     job.durationMs = Date.now() - startedAt;
     await job.save().catch(() => {});
     throw err;
   }
+}
+
+/** Live progress for an extraction the caller started. */
+export function getOcrProgress(progressId, userId) {
+  const entry = ocrProgress.read(progressId, userId);
+  if (!entry) throw new ApiError(404, "No progress for that id");
+  return entry;
 }
 
 /** One OCR job, if the caller can see the document. */

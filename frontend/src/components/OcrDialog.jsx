@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { fileToDataUrl, runOcr } from "@/lib/api";
+import { imageToOcrDataUrl, runOcr, getOcrProgress } from "@/lib/api";
 
 /**
  * Image -> Text (OCR) dialog.
@@ -16,7 +16,7 @@ import { fileToDataUrl, runOcr } from "@/lib/api";
 const MAX_BYTES = 5 * 1024 * 1024;
 
 const LANGUAGES = [
-  { code: "auto", label: "Auto detect" },
+  { code: "auto", label: "Auto (read every script)" },
   { code: "en", label: "English" },
   { code: "ur", label: "Urdu" },
   { code: "ar", label: "Arabic" },
@@ -30,6 +30,12 @@ function sizeLabel(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** Unique id tying a poll to the extraction that started it. */
+function newProgressId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return `ocr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 export default function OcrDialog({ documentId, canEdit = true, onInsert, onClose }) {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState("");
@@ -37,9 +43,39 @@ export default function OcrDialog({ documentId, canEdit = true, onInsert, onClos
   const [text, setText] = useState("");
   const [meta, setMeta] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(null);
+  const [progressLabel, setProgressLabel] = useState("");
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef(null);
+  const pollRef = useRef(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  // Progress is best-effort: a failed poll just leaves the last known value in
+  // place while the POST itself still returns the authoritative result.
+  const startPolling = useCallback(
+    (id, progressId) => {
+      stopPolling();
+      pollRef.current = setInterval(async () => {
+        try {
+          const res = await getOcrProgress(id, progressId);
+          setProgress(res.percent);
+          setProgressLabel(res.status || "");
+        } catch {
+          /* ignore transient polling errors */
+        }
+      }, 400);
+    },
+    [stopPolling]
+  );
+
+  useEffect(() => stopPolling, [stopPolling]);
 
   const accept = useCallback(async (picked) => {
     setError("");
@@ -62,11 +98,15 @@ export default function OcrDialog({ documentId, canEdit = true, onInsert, onClos
     if (!file || !documentId) return;
     setBusy(true);
     setError("");
+    setProgress(0);
+    setProgressLabel("preparing");
+    const progressId = newProgressId();
+    startPolling(documentId, progressId);
     try {
-      // Downscale + re-encode before upload: strips EXIF and keeps the payload
-      // inside the server's body limit.
-      const dataUrl = await fileToDataUrl(file);
-      const res = await runOcr(documentId, dataUrl, language);
+      // The server does the real work (straightening, lighting, thresholding),
+      // so the browser only scales the picture and sends it.
+      const image = await imageToOcrDataUrl(file);
+      const res = await runOcr(documentId, image, language, progressId);
       setText(res.text || "");
       setMeta({
         detectedLanguage: res.languageName || res.detectedLanguage,
@@ -79,9 +119,12 @@ export default function OcrDialog({ documentId, canEdit = true, onInsert, onClos
     } catch (err) {
       setError(err.message || "Text could not be extracted from that image");
     } finally {
+      stopPolling();
       setBusy(false);
+      setProgress(null);
+      setProgressLabel("");
     }
-  }, [file, documentId, language]);
+  }, [file, documentId, language, startPolling, stopPolling]);
 
   const insert = (value) => {
     onInsert?.(value);
@@ -165,9 +208,29 @@ export default function OcrDialog({ documentId, canEdit = true, onInsert, onClos
               disabled={!file || busy}
               className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
             >
-              {busy ? "Extracting..." : "Extract text"}
+              {busy ? `Extracting... ${progress ?? 0}%` : "Extract text"}
             </button>
           </div>
+
+          <p className="mt-1.5 text-[11px] text-zinc-400">
+            Auto reads English, Urdu and Hindi on the same image, line by line. Pick a single
+            language for the cleanest result on a page written in one script.
+          </p>
+
+          {busy && (
+            <div className="mt-3">
+              <div className="mb-1 flex items-center justify-between text-[11px] text-zinc-500">
+                <span className="capitalize">{progressLabel || "Extracting text"}</span>
+                <span>{progress ?? 0}%</span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200">
+                <div
+                  className="h-full rounded-full bg-zinc-900 transition-all duration-200"
+                  style={{ width: `${progress ?? 0}%` }}
+                />
+              </div>
+            </div>
+          )}
 
           {error && (
             <p className="mt-3 rounded-md bg-red-50 px-2 py-1.5 text-xs text-red-700">{error}</p>

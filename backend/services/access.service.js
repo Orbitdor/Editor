@@ -2,6 +2,8 @@ import Document from "../models/doc.model.js";
 import Share from "../models/Share.model.js";
 import WorkspaceMember, { roleAtLeast } from "../models/WorkspaceMember.model.js";
 import { ApiError } from "../utils/ApiError.js";
+import { cacheConfig } from "../config/cache.js";
+import { cacheDel, cacheDelPrefix, cacheKey, getOrSet } from "./cache.service.js";
 
 /**
  * Role ranking. Higher number = more power. Used by `canAccess`.
@@ -13,15 +15,28 @@ const RANK = {
   owner: 4,
 };
 
-/** Access-list cache: docId -> { at, entries }. Avoids a query per WS message. */
-const ACCESS_TTL_MS = 5_000;
-const accessCache = new Map();
+/**
+ * Access lookups used to sit behind a 5-second in-process `Map`. That was fine
+ * on one process and useless on serverless, where every instance had its own
+ * copy and none of them outlived a restart. They now go through the shared
+ * cache, which keeps the same five-second contract but applies it everywhere --
+ * and this is the hottest read in the app, because every document open and every
+ * WebSocket role re-check resolves a role before it does anything else.
+ */
+const ACCESS_TTL_SECONDS = cacheConfig().ttl.access;
 
 /**
- * Drop a document from the access cache. Call after every share mutation.
+ * Drop every cached access fact about a document: the share list, and the
+ * resolved role for every user who might hold one.
+ *
+ * The role keys are prefix-deleted because they are namespaced per user, and a
+ * share change can alter the role of any number of them at once.
  */
 export function invalidateAccessCache(docId) {
-  accessCache.delete(String(docId));
+  return Promise.all([
+    cacheDel(cacheKey("access:shares", docId)),
+    cacheDelPrefix(`${cacheKey("access:role", docId)}:`),
+  ]);
 }
 
 /**
@@ -35,28 +50,25 @@ export function canAccess(role, minimum) {
 /**
  * Read the (cached) share entries for a document.
  *
+ * The cached value is the resolved plain array, not a Mongoose cursor, so a hit
+ * costs a single JSON parse and no population.
+ *
  * @returns {Promise<Array<{_id: string, user: string, email: string, name: string, role: string}>>}
  */
 export async function shareEntries(docId) {
-  const key = String(docId);
-  const hit = accessCache.get(key);
-  const now = Date.now();
-  if (hit && now - hit.at < ACCESS_TTL_MS) return hit.entries;
+  return getOrSet(cacheKey("access:shares", docId), ACCESS_TTL_SECONDS, async () => {
+    const rows = await Share.find({ document: docId })
+      .select("user email name role")
+      .lean();
 
-  const rows = await Share.find({ document: docId })
-    .select("user email name role")
-    .lean();
-
-  const entries = rows.map((r) => ({
-    _id: String(r._id),
-    user: String(r.user),
-    email: r.email,
-    name: r.name || "",
-    role: r.role,
-  }));
-
-  accessCache.set(key, { at: now, entries });
-  return entries;
+    return rows.map((r) => ({
+      _id: String(r._id),
+      user: String(r.user),
+      email: r.email,
+      name: r.name || "",
+      role: r.role,
+    }));
+  });
 }
 
 /**
@@ -70,6 +82,10 @@ export async function shareEntries(docId) {
  * An explicit share always wins over workspace membership, because sharing a
  * single document at a higher role than the workspace default is deliberate.
  *
+ * The resolved role is cached per (document, user). It is a permission answer
+ * rather than content, so the TTL is the short access TTL and every share
+ * mutation clears it, which is the same freshness the old in-process cache gave.
+ *
  * @param {string} docId
  * @param {string} userId
  * @param {object|null} doc Already-loaded Document (pass it to avoid a re-read).
@@ -81,25 +97,30 @@ export async function resolveRole(docId, userId, doc = null) {
     if (!doc) return null;
   }
 
+  // The owner check is a field comparison, so it stays ahead of any cache: it is
+  // cheaper than a lookup and can never be stale.
   if (String(doc.owner) === String(userId)) return "owner";
 
-  const entries = await shareEntries(docId);
-  const shared = entries.find((e) => e.user === String(userId))?.role;
-  if (shared) return shared;
+  const workspace = doc.workspace;
+  return getOrSet(cacheKey("access:role", docId, userId), ACCESS_TTL_SECONDS, async () => {
+    const entries = await shareEntries(docId);
+    const shared = entries.find((e) => e.user === String(userId))?.role;
+    if (shared) return shared;
 
-  if (!doc.workspace) return null;
+    if (!workspace) return null;
 
-  // Workspace membership maps onto the document roles a member already knows.
-  const membership = await WorkspaceMember.findOne({
-    workspace: doc.workspace,
-    user: userId,
-    status: "active",
-  })
-    .select("role")
-    .lean();
-  if (!membership) return null;
+    // Workspace membership maps onto the document roles a member already knows.
+    const membership = await WorkspaceMember.findOne({
+      workspace,
+      user: userId,
+      status: "active",
+    })
+      .select("role")
+      .lean();
+    if (!membership) return null;
 
-  return { admin: "editor", editor: "editor", member: "commenter", viewer: "viewer" }[membership.role] || null;
+    return { admin: "editor", editor: "editor", member: "commenter", viewer: "viewer" }[membership.role] || null;
+  });
 }
 
 /** Whether the user may act in a workspace at all, at the given role. */
@@ -117,10 +138,27 @@ export async function workspaceRoleAtLeast(workspaceId, userId, minimum) {
 
 /**
  * Load a document and assert the caller holds at least `minimum`.
+ *
+ * `fromCache: true` reads the document body from the cache instead of MongoDB.
+ * It is only safe for read-only callers, because the cached copy is a plain
+ * object that cannot be `save()`d back -- which is exactly what a read path
+ * wants, and exactly what a write path must not get. Every mutation leaves this
+ * at the default so it always works against a live document.
+ *
  * @returns {Promise<{doc: object, role: string}>}
  */
-export async function authorize(docId, userId, minimum = "viewer") {
-  const doc = await Document.findById(docId);
+export async function authorize(docId, userId, minimum = "viewer", { fromCache = false } = {}) {
+  const doc = fromCache
+    ? await getOrSet(cacheKey("doc:body", docId), cacheConfig().ttl.documents, () =>
+        Document.findById(docId)
+          // `collabSync` is the CRDT blob the WebSocket layer reads for itself,
+          // and `linkShare.token` is the public-link credential the model's
+          // transform normally strips: neither belongs in a cache the client
+          // could ever be served from.
+          .select("-collabSync -linkShare")
+          .lean()
+      )
+    : await Document.findById(docId);
   if (!doc) throw new ApiError(404, "Document not found");
 
   const role = await resolveRole(docId, userId, doc);
@@ -191,7 +229,7 @@ export async function replaceShares(doc, entries, invitedBy) {
     );
   }
 
-  invalidateAccessCache(doc._id);
+  await invalidateAccessCache(doc._id);
 }
 
 /**
